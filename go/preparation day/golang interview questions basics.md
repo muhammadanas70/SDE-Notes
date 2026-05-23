@@ -52,9 +52,9 @@ Go (also called Golang) was created at **Google in 2007** by **Robert Griesemer,
 LANGUAGE COMPARISON — Mental Model
 ===================================
 
-          Speed │ Safety │ Simplicity │ Concurrency
+               │   Speed│ Safety     │ Simplicity Concurrency
   ─────────────┼────────┼────────────┼────────────
-  C/C++        │  ████  │   low      │  manual
+  C/C++        │  ██████│   low      │  manual
   Java         │  ███   │   high     │  threads
   Python       │  █     │   medium   │  GIL limited
   Go           │  ████  │   high     │  goroutines ← Sweet spot
@@ -150,13 +150,13 @@ PACKAGE CONCEPTS
 
   ┌──────────────────────────────────────────────┐
   │  RULE: All files in a directory must have    │
-  │        the SAME package name                  │
-  │                                               │
+  │        the SAME package name                 │
+  │                                              │
   │  myapp/
-  │  ├── main.go        package main              │
+  │  ├── main.go        package main             │
   │  ├── helpers.go     package main  ← same!    │
   │  └── utils/
-  │      ├── math.go    package utils             │
+  │      ├── math.go    package utils            │
   │      └── string.go  package utils ← same!    │
   └──────────────────────────────────────────────┘
 
@@ -3243,3 +3243,1587 @@ I'll create a comprehensive, in-depth Golang interview guide as a `.md` file. Th
 **Advanced** (Sections 18–24): `defer` LIFO order, `panic`/`recover` flow. Packages, modules, `go.mod`. Closures capturing variables + the classic loop closure gotcha. Type assertions, type switches. Embedding as composition-over-inheritance. **GMP Scheduler model** with ASCII architecture diagram showing work-stealing. Memory: stack vs heap, escape analysis, tri-color mark-and-sweep GC explained.
 
 **Interview Mastery** (Sections 25–27): Mutex, RWMutex, `sync.Once`, `context` propagation. 10 common gotchas with fixes. 10 deep Q&A covering nil interface trap, defer + named returns, goroutine leaks — the trickiest questions interviewers love.
+
+===
+
+Good question. The confusion comes from mixing up **“who has more privilege/power”** with **“what operation costs more.”**
+
+The kernel is more powerful and lower-level than the Go runtime, but that does **not** mean every kernel operation is faster.
+
+# Why OS thread switching is slower
+
+When switching between **OS threads**, the CPU usually has to enter the kernel and perform a **context switch**.
+
+That involves saving/restoring a lot of state:
+
+* CPU registers
+* stack pointer
+* instruction pointer
+* memory mappings
+* scheduling metadata
+* privilege level changes (user ↔ kernel mode)
+* possibly cache/TLB disruption
+
+The OS scheduler must decide:
+
+* which thread runs next
+* on which CPU core
+* whether priorities changed
+* whether the thread is blocked on I/O
+
+This is a heavyweight operation.
+
+---
+
+# Goroutine switching is cheaper because Go controls it
+
+A goroutine switch is mostly:
+
+* save a few registers
+* save stack pointer
+* pick another goroutine
+* continue execution
+
+The Go runtime already knows:
+
+* all goroutines
+* their states
+* their stacks
+* scheduling queues
+
+No kernel entry is needed for most switches.
+
+So it avoids:
+
+* syscall overhead
+* privilege mode transitions
+* kernel scheduler work
+
+That’s why it’s faster.
+
+---
+
+# Important distinction
+
+A goroutine is **not** a real CPU execution unit.
+
+The CPU only executes:
+
+* processes
+* OS threads
+
+Goroutines are a **runtime abstraction** created by Google's Go runtime.
+
+So eventually:
+
+```text
+goroutine
+   ↓
+Go runtime scheduler
+   ↓
+OS thread
+   ↓
+kernel scheduler
+   ↓
+CPU core
+```
+
+The runtime is “on top” of the kernel, yes.
+
+But because the runtime manages goroutines in user space, it can perform many scheduling operations without asking the kernel.
+
+---
+
+# Analogy
+
+Imagine:
+
+## OS thread scheduling
+
+Like changing train tracks through a central railway authority.
+
+You must:
+
+* stop trains
+* signal controllers
+* update routing systems
+* coordinate everything
+
+Safe but expensive.
+
+---
+
+## Goroutine scheduling
+
+Like rearranging passengers inside the same train carriage.
+
+No railway authority involved.
+Much cheaper.
+
+---
+
+# Another key reason: stacks
+
+OS threads traditionally reserve large stacks:
+
+```text
+1 MB × 10,000 threads = huge memory
+```
+
+Goroutines start tiny (~2 KB) and grow dynamically.
+
+So Go can keep millions of goroutines in memory.
+
+---
+
+# “Kernel is faster than runtime” — partially true
+
+The kernel is:
+
+* lower-level
+* closer to hardware
+* highly optimized
+
+But kernel operations often require:
+
+* synchronization
+* security checks
+* interrupt handling
+* scheduler coordination
+* cross-core communication
+
+Those things are expensive.
+
+Meanwhile, the Go runtime:
+
+* works entirely in user space
+* controls its own goroutine metadata
+* avoids many protection boundaries
+
+So for lightweight scheduling, user-space runtimes can outperform kernel scheduling.
+
+This idea is used in many systems:
+
+* Go goroutines
+* Erlang processes
+* Java virtual threads
+* green threads
+* async runtimes like Tokio in Rust Foundation ecosystem languages
+
+Yes — ultimately **everything executes on the CPU**, and the kernel is what gives your program access to CPU time.
+
+But there’s an important distinction between:
+
+```text
+Running WITH kernel involvement
+vs
+Running UNDER kernel control
+```
+
+---
+
+# What actually happens
+
+Your Go program is a normal process created by the OS.
+
+Inside that process:
+
+```text id="f5mbf7"
+Go runtime
+├── Goroutine scheduler
+├── Garbage collector
+├── Memory manager
+└── Your code
+```
+
+All of this runs in **user space** on CPU cores using OS threads.
+
+The kernel already said:
+
+> “This thread may run now.”
+
+Once the thread is running on the CPU, the Go runtime can do many things **without calling the kernel again**.
+
+---
+
+# Example: goroutine switch
+
+Suppose:
+
+```go
+go task1()
+go task2()
+```
+
+Both goroutines are running on the SAME OS thread.
+
+The Go runtime may switch between them like:
+
+```text id="0e9j8u"
+save goroutine1 registers
+load goroutine2 registers
+jump to goroutine2
+```
+
+This happens entirely in user space.
+
+No syscall.
+No kernel scheduler.
+No mode switch.
+
+The CPU just continues executing instructions.
+
+---
+
+# So where is the kernel involved?
+
+The kernel is still responsible for:
+
+* creating OS threads
+* giving CPU time
+* memory protection
+* network I/O
+* disk I/O
+* timers
+* interrupts
+
+The Go runtime cannot bypass the kernel for those.
+
+Example:
+
+```go
+data, _ := os.ReadFile("a.txt")
+```
+
+Eventually this becomes:
+
+```text id="j08bza"
+Go runtime
+   ↓
+syscall
+   ↓
+kernel
+   ↓
+disk
+```
+
+Kernel involvement is mandatory there.
+
+---
+
+# Think of it like this
+
+The kernel gives Go:
+
+```text id="a5l7x0"
+"Here are 4 OS threads.
+You may execute on these CPU cores."
+```
+
+Then inside those threads, the Go runtime manages:
+
+```text id="w9hf9m"
+1,000,000 goroutines
+```
+
+without asking the kernel every time.
+
+---
+
+# Why this matters
+
+If every goroutine switch required the kernel:
+
+```text id="5z0n0z"
+goroutine switch
+→ syscall
+→ kernel scheduler
+→ return
+```
+
+then goroutines would lose their lightweight advantage.
+
+The whole optimization is:
+
+> do as much scheduling as possible in user space.
+
+---
+
+# Simplified stack
+
+```text id="4h7r5j"
+CPU
+↑
+Kernel schedules OS threads
+↑
+Go runtime schedules goroutines
+↑
+Your Go code
+```
+
+So:
+
+* goroutines are NOT below the kernel
+* they run inside OS threads
+* but most goroutine scheduling avoids kernel transitions entirely
+
+Exactly. Everything eventually becomes CPU instructions.
+
+Even the Go runtime itself is just machine code executing on the CPU.
+
+The key difference is **where those instructions execute and who controls the scheduling**.
+
+# Two execution modes
+
+Modern CPUs support different privilege levels:
+
+```text id="h4zwl6"
+User mode   (applications, Go runtime)
+Kernel mode (operating system)
+```
+
+---
+
+# Go runtime scheduling
+
+When the Go runtime switches goroutines:
+
+```text id="8q9y7n"
+save registers
+change stack pointer
+jump to another function
+```
+
+those are just normal CPU instructions running in **user mode**.
+
+Example kinds of assembly instructions:
+
+```text id="o0n9jp"
+MOV
+PUSH
+POP
+JMP
+CALL
+```
+
+No kernel involvement.
+
+The CPU keeps executing directly.
+
+---
+
+# Kernel scheduling
+
+When the OS switches threads, the CPU must enter **kernel mode**.
+
+That requires special instructions like:
+
+```text id="jlwmkq"
+syscall
+sysenter
+int 0x80
+```
+
+These trigger a privilege transition:
+
+```text id="t08vza"
+user mode → kernel mode
+```
+
+The CPU then:
+
+* switches protection levels
+* changes execution context
+* runs kernel scheduler code
+
+That transition itself has overhead.
+
+---
+
+# So both are CPU instructions
+
+Correct:
+
+```text id="g0sjj6"
+Go runtime scheduling  = CPU instructions
+Kernel scheduling      = CPU instructions
+```
+
+But:
+
+```text id="5r6n8l"
+user-space instructions are cheaper
+than kernel-space transitions
+```
+
+because kernel entry/exit involves:
+
+* privilege switching
+* security isolation
+* scheduler bookkeeping
+* synchronization
+* cache/TLB effects
+
+---
+
+# Analogy
+
+Imagine you’re working in an office.
+
+## User-space work
+
+You rearrange papers on your desk yourself.
+
+Fast.
+
+---
+
+## Kernel-space work
+
+You must:
+
+* pass security checkpoint
+* get manager approval
+* update company database
+* coordinate with central administration
+
+Still work, still humans doing tasks — but much more overhead.
+
+---
+
+# Important realization
+
+The CPU does not “know” what a goroutine is.
+
+The CPU only executes instructions.
+
+The Go runtime creates the illusion of millions of lightweight concurrent tasks by managing them in software.
+
+Not exactly — user space is **not inside** kernel space.
+
+They are separate memory and privilege regions.
+
+A better picture is:
+
+```text id="38u9f3"
+┌─────────────────────┐
+│     User Space      │
+│  (Go runtime/code)  │
+└─────────────────────┘
+          │
+          │ syscall / interrupt
+          ▼
+┌─────────────────────┐
+│    Kernel Space     │
+│   (Linux kernel)    │
+└─────────────────────┘
+          │
+          ▼
+        CPU
+```
+
+So when Go runtime instructions execute, they do **NOT** “go through the kernel.”
+
+They execute directly on the CPU in **user mode**.
+
+---
+
+# Important concept
+
+The kernel does NOT sit “between” every instruction and the CPU.
+
+If that were true, programs would be unbelievably slow.
+
+Instead:
+
+```text id="t69a9e"
+CPU executes user-space instructions directly
+```
+
+The kernel only gets involved when:
+
+* a syscall happens
+* an interrupt occurs
+* a page fault happens
+* hardware event occurs
+* scheduler timer fires
+
+---
+
+# What happens normally
+
+Suppose your Go code does:
+
+```go id="it6r6k"
+x := a + b
+```
+
+CPU directly executes instructions like:
+
+```asm id="p4tfc0"
+MOV
+ADD
+STORE
+```
+
+No kernel involved.
+
+The kernel is not watching every instruction.
+
+---
+
+# When kernel becomes involved
+
+Example:
+
+```go id="21v2bh"
+os.ReadFile("a.txt")
+```
+
+Now Go must ask the OS:
+
+```text id="f8f6wz"
+"Please access the disk for me"
+```
+
+That requires a syscall:
+
+```text id="m9vz94"
+user mode
+   ↓ syscall
+kernel mode
+   ↓
+kernel handles disk I/O
+   ↓
+return to user mode
+```
+
+---
+
+# Why separation exists
+
+User space is restricted:
+
+* cannot access hardware directly
+* cannot access arbitrary memory
+* cannot control CPU scheduling directly
+
+Kernel space is privileged:
+
+* full hardware access
+* memory management
+* device drivers
+* process scheduling
+
+This isolation is a major security feature.
+
+---
+
+# The CPU itself supports this
+
+Modern CPUs have hardware privilege rings:
+
+```text id="ck9lr6"
+Ring 0 → kernel mode
+Ring 3 → user mode
+```
+
+Applications like Go programs run in Ring 3.
+
+Linux kernel runs in Ring 0.
+
+The CPU enforces the boundary in hardware.
+
+---
+
+# So correcting the idea
+
+Not:
+
+```text id="2s55ce"
+userspace inside kernel space
+```
+
+Instead:
+
+```text id="g2gh6k"
+userspace and kernel space are separate
+```
+
+And:
+
+```text id="73w8np"
+user-space instructions execute directly on CPU
+without kernel involvement most of the time
+```
+
+That’s why user-space goroutine scheduling can be so fast.
+
+
+This is the core idea of how operating systems work.
+
+User-space programs **do not own the CPU**.
+The kernel temporarily gives them permission to run on the CPU.
+
+# What actually happens
+
+When you start a Go program:
+
+```text id="cctwtc"
+./app
+```
+
+the kernel:
+
+1. creates a process
+2. creates OS thread(s)
+3. sets up memory
+4. loads your machine code into RAM
+5. schedules a thread onto a CPU core
+
+Then the CPU starts executing your program’s instructions in **user mode**.
+
+---
+
+# So how does user-space execute directly?
+
+Because the kernel already configured the CPU to run that thread.
+
+Think of it like:
+
+```text id="oq3v5k"
+Kernel:
+"You may use CPU core 2 for a while.
+Run in restricted mode."
+```
+
+Then the CPU executes user-space instructions directly until:
+
+* the time slice expires
+* an interrupt occurs
+* a syscall happens
+* the thread blocks
+
+---
+
+# CPU modes
+
+The CPU has privilege levels.
+
+Simplified:
+
+```text id="9l0b57"
+Kernel mode (privileged)
+User mode   (restricted)
+```
+
+Both modes execute directly on hardware.
+
+But user mode has restrictions enforced by the CPU itself.
+
+---
+
+# Important distinction
+
+“Cannot access hardware directly” means:
+
+User-space code cannot do privileged operations like:
+
+```text id="1c7eja"
+- program disk controller
+- configure page tables
+- disable interrupts
+- control scheduler
+- access arbitrary RAM
+```
+
+The CPU blocks such instructions in user mode.
+
+---
+
+# Example
+
+Suppose a user program tries:
+
+```asm id="1e6k1u"
+CLI   ; disable interrupts
+```
+
+That instruction is privileged.
+
+CPU says:
+
+```text id="b3f7f6"
+❌ illegal in user mode
+```
+
+and traps into the kernel.
+
+---
+
+# So who schedules?
+
+The kernel scheduler schedules **OS threads** onto CPU cores.
+
+Like:
+
+```text id="u0zjcl"
+OS Thread A → CPU Core 1
+OS Thread B → CPU Core 2
+```
+
+Once an OS thread is running:
+
+```text id="m8lsct"
+Go runtime inside that thread
+schedules goroutines itself
+```
+
+So there are TWO schedulers:
+
+# 1. Kernel scheduler
+
+Schedules:
+
+* processes
+* OS threads
+
+onto:
+
+* CPU cores
+
+---
+
+# 2. Go runtime scheduler
+
+Schedules:
+
+* goroutines
+
+onto:
+
+* OS threads
+
+---
+
+# Very important
+
+The Go runtime CANNOT run without OS threads.
+
+The runtime is borrowing execution time from OS threads that Linux/Windows/macOS scheduled.
+
+---
+
+# Full picture
+
+```text id="vfjlwm"
+CPU Core
+   ↑
+Kernel scheduler
+   ↑
+OS Thread
+   ↑
+Go runtime scheduler
+   ↑
+Goroutines
+```
+
+---
+
+# Analogy
+
+Imagine a company building.
+
+## Kernel
+
+Building management:
+
+* controls rooms
+* security
+* electricity
+* elevators
+
+## User program
+
+An employee allowed into one office room.
+
+The employee can work freely inside the room:
+
+* write papers
+* move chairs
+* organize desk
+
+But cannot:
+
+* rewire electricity
+* control elevators
+* enter other offices
+
+Similarly:
+
+```text id="h9lrvg"
+User-space code executes directly on CPU,
+but with restricted privileges.
+```
+
+When the kernel loads your program, it primarily works with **virtual memory**, which is then mapped to **physical RAM** by the MMU (Memory Management Unit).
+
+So the full story is:
+
+```text id="5i9hko"
+Your Program
+    ↓
+Virtual Memory
+    ↓ (mapped by page tables)
+Physical RAM
+```
+
+---
+
+# What your Go program sees
+
+Your Go process thinks it has its own continuous memory:
+
+```text id="94l1b4"
+0x1000
+0x2000
+0x3000
+...
+```
+
+This is **virtual address space**.
+
+It is NOT raw physical RAM addresses.
+
+---
+
+# What the kernel does
+
+When starting your program:
+
+1. kernel creates a virtual address space
+2. loads executable sections (`text`, `data`, etc.)
+3. creates page tables
+4. maps virtual pages to physical RAM pages
+
+Example:
+
+```text id="d4qlgx"
+Virtual Address   →   Physical RAM
+0x400000          →   0x1A3F000
+0x401000          →   0x8C22000
+```
+
+The mapping may be completely non-contiguous physically.
+
+---
+
+# Where does your code execute from?
+
+The CPU executes instructions using **virtual addresses** in user space.
+
+But before accessing RAM, the CPU hardware MMU translates:
+
+```text id="w0j33q"
+virtual address
+    ↓
+physical address
+```
+
+using page tables created by the kernel.
+
+---
+
+# Important distinction
+
+## User virtual memory
+
+Your Go program memory:
+
+* code
+* heap
+* stacks
+* goroutine stacks
+
+live here.
+
+Restricted.
+Isolated per process.
+
+---
+
+## Kernel virtual memory
+
+The kernel has its OWN virtual address space.
+
+It is separate and privileged.
+
+User programs normally cannot access it.
+
+---
+
+# Physical RAM
+
+Actual hardware memory chips.
+
+Both:
+
+* user-space memory
+* kernel memory
+
+eventually reside in physical RAM.
+
+But through different virtual mappings.
+
+---
+
+# Simplified diagram
+
+```text id="f0xkku"
+                CPU
+                 │
+                 ▼
+        Virtual Address
+                 │
+          MMU translation
+                 │
+                 ▼
+           Physical RAM
+```
+
+---
+
+# So when Go runtime executes
+
+Its instructions are:
+
+```text id="uwr2is"
+user-space virtual memory
+    ↓
+mapped to physical RAM
+    ↓
+executed by CPU
+```
+
+The kernel set up the mappings, but the CPU executes them directly afterward.
+
+---
+
+# Key realization
+
+Modern operating systems almost never let applications use raw physical RAM directly.
+
+Everything is virtualized through:
+
+* virtual memory
+* page tables
+* MMU hardware
+
+This gives:
+
+* isolation
+* security
+* multitasking
+* memory protection
+* efficient memory management
+
+Great — now we’re getting into the actual operating system internals.
+
+You’re asking:
+
+> How does the kernel scheduler actually schedule threads onto CPU cores?
+> How does userspace code “run directly” on the CPU?
+> What really happens under the hood?
+
+Let’s go layer by layer.
+
+---
+
+# 1. CPU can only execute instructions
+
+At the lowest level, a CPU core is extremely simple conceptually:
+
+```text id="8up2f3"
+fetch instruction
+decode instruction
+execute instruction
+repeat
+```
+
+The CPU only knows:
+
+* registers
+* memory addresses
+* instructions
+* privilege modes
+
+It does NOT know:
+
+* Go
+* goroutines
+* processes
+* files
+* networking
+
+Those are abstractions built by the OS/runtime.
+
+---
+
+# 2. What is a process really?
+
+A process is mainly:
+
+```text id="r7j6rj"
+- virtual address space
+- one or more threads
+- open resources
+- metadata
+```
+
+The important thing for execution is the **thread**.
+
+Because:
+
+> Threads are what the CPU actually runs.
+
+---
+
+# 3. What is an OS thread?
+
+An OS thread is basically:
+
+```text id="a9m0xr"
+- CPU register state
+- stack
+- instruction pointer
+- scheduling info
+```
+
+Example:
+
+```text id="k3l9he"
+RIP = next instruction to execute
+RSP = stack pointer
+RAX/RBX/... = registers
+```
+
+The kernel stores all this.
+
+---
+
+# 4. How does a thread start running?
+
+Suppose Linux scheduler chooses Thread A.
+
+Kernel does something conceptually like:
+
+```text id="m7k0xz"
+load Thread A registers
+load stack pointer
+load instruction pointer
+switch CPU to user mode
+jump to instruction
+```
+
+Now the CPU is executing YOUR program directly.
+
+---
+
+# 5. Where is the program code?
+
+Your executable file:
+
+```text id="i5p3cf"
+./app
+```
+
+contains machine code already compiled for the CPU.
+
+Example real instructions:
+
+```asm id="7o1p5n"
+MOV RAX, 5
+ADD RAX, 10
+CALL function
+```
+
+Kernel loads this into memory.
+
+CPU executes it directly.
+
+---
+
+# 6. What does “user mode” mean?
+
+CPUs have hardware privilege levels.
+
+Simplified:
+
+```text id="rr3v6x"
+Ring 0 = kernel mode
+Ring 3 = user mode
+```
+
+User mode:
+
+* restricted
+* cannot execute privileged instructions
+* cannot access kernel memory
+
+But still executes directly on CPU.
+
+---
+
+# 7. Then how does multitasking happen?
+
+Suppose:
+
+* Chrome running
+* Go server running
+* VS Code running
+
+One CPU core cannot truly execute all simultaneously.
+
+So kernel rapidly switches between threads.
+
+This is called:
+
+# Context Switching
+
+---
+
+# 8. What is context switching?
+
+Suppose CPU currently running:
+
+```text id="wjp6tf"
+Thread A
+```
+
+Timer interrupt occurs.
+
+CPU automatically jumps into kernel mode.
+
+Kernel saves Thread A state:
+
+```text id="q7q0r8"
+registers
+instruction pointer
+stack pointer
+flags
+```
+
+Then loads Thread B state:
+
+```text id="qvzj9d"
+restore registers
+restore RIP
+restore stack
+```
+
+Then CPU continues Thread B exactly where it stopped earlier.
+
+This happens thousands/millions of times per second.
+
+---
+
+# 9. What triggers scheduling?
+
+Usually hardware timer interrupts.
+
+CPU has programmable timers.
+
+Example:
+
+```text id="s5cfga"
+every 4ms:
+    interrupt CPU
+```
+
+Interrupt forces kernel execution.
+
+Kernel scheduler decides:
+
+```text id="d44k0r"
+should current thread continue?
+or switch?
+```
+
+---
+
+# 10. How does virtual memory fit in?
+
+Every process gets virtual memory.
+
+Example:
+
+```text id="o1p9qa"
+Process A sees:
+0x1000 → its memory
+
+Process B also sees:
+0x1000 → different memory
+```
+
+How?
+
+Because CPU uses MMU translation tables.
+
+Kernel configures these page tables.
+
+---
+
+# 11. CPU execution pipeline with virtual memory
+
+When executing instruction:
+
+```asm id="6bqglt"
+MOV RAX, [0x1000]
+```
+
+CPU does:
+
+```text id="ghy6za"
+virtual address 0x1000
+    ↓
+MMU translates
+    ↓
+physical RAM address
+    ↓
+read RAM
+```
+
+This translation happens in hardware.
+
+Very fast.
+
+---
+
+# 12. So where does Go runtime fit?
+
+Inside ONE OS thread:
+
+```text id="ryb35j"
+OS thread running on CPU
+```
+
+the Go runtime executes like any normal code.
+
+The runtime itself is machine code too.
+
+---
+
+# 13. Goroutine scheduling under the hood
+
+Suppose:
+
+```go id="l4v1gq"
+go task1()
+go task2()
+```
+
+Go runtime keeps metadata:
+
+```text id="n5f8qj"
+goroutine1:
+    stack
+    state
+    instruction pointer
+
+goroutine2:
+    stack
+    state
+    instruction pointer
+```
+
+The runtime can switch between them WITHOUT kernel involvement.
+
+Conceptually:
+
+```text id="g7s7s5"
+save goroutine1 registers
+save goroutine1 stack pointer
+
+load goroutine2 registers
+load goroutine2 stack pointer
+
+jump to goroutine2
+```
+
+Still running inside SAME OS thread.
+
+Still same CPU core.
+
+Still user mode.
+
+---
+
+# 14. Huge insight
+
+Kernel scheduler switches:
+
+```text id="z3yrzj"
+OS thread ↔ OS thread
+```
+
+Go scheduler switches:
+
+```text id="5zsm8x"
+goroutine ↔ goroutine
+```
+
+inside a single OS thread.
+
+That’s why goroutines are lightweight.
+
+---
+
+# 15. Full real-world stack
+
+```text id="ixhmpj"
++----------------------+
+| Your Go code         |
++----------------------+
+| Go Runtime           |
+| - goroutine scheduler|
+| - GC                 |
++----------------------+
+| OS Thread            |
++----------------------+
+| Linux Kernel         |
+| - thread scheduler   |
+| - memory manager     |
+| - syscalls           |
++----------------------+
+| CPU Hardware         |
+| - MMU                |
+| - registers          |
+| - privilege rings    |
++----------------------+
+| Physical RAM         |
++----------------------+
+```
+
+---
+
+# 16. Final core understanding
+
+The kernel does NOT execute every instruction for you.
+
+Instead:
+
+```text id="t0xhhj"
+kernel sets up execution environment
+    ↓
+CPU executes user code directly
+    ↓
+kernel regains control only on:
+    - interrupts
+    - syscalls
+    - faults
+    - scheduling events
+```
+
+That separation is the foundation of modern operating systems.
+
+The MMU translation tables (usually called **page tables**) are stored in **physical RAM**.
+
+The CPU’s MMU hardware reads them to translate:
+
+```text id="h2dltz"
+virtual address → physical address
+```
+
+---
+
+# Where exactly are page tables?
+
+They are:
+
+```text id="0b2nmg"
+normal memory structures in RAM
+created and managed by the kernel
+```
+
+Not inside your Go program.
+
+Not inside the CPU registers permanently.
+
+They live in kernel-managed memory.
+
+---
+
+# Very simplified example
+
+Suppose your process has virtual memory:
+
+```text id="jlwmff"
+Virtual Address    Physical RAM
+0x1000        →    0xA000
+0x2000        →    0xF000
+0x3000        →    0xC000
+```
+
+The kernel stores these mappings in page tables in RAM.
+
+---
+
+# Then how does CPU know where the tables are?
+
+The CPU has a special register.
+
+On x86-64, it’s called:
+
+```text id="c4g97u"
+CR3 register
+```
+
+CR3 points to the root page table for the currently running process.
+
+Conceptually:
+
+```text id="5ks1px"
+CR3 → address of page table in RAM
+```
+
+---
+
+# Execution flow
+
+Suppose your Go program accesses:
+
+```text id="wr7hlq"
+x := arr[0]
+```
+
+Compiled instruction:
+
+```asm id="b0ewi7"
+MOV RAX, [0x7fff1234000]
+```
+
+CPU does:
+
+```text id="7t5xod"
+1. virtual address = 0x7fff1234000
+2. MMU checks page tables
+3. finds physical address
+4. accesses physical RAM
+```
+
+All this happens in hardware.
+
+---
+
+# Important: MMU is hardware
+
+The MMU (Memory Management Unit) is part of the CPU itself.
+
+It performs address translation automatically.
+
+The OS only:
+
+* creates page tables
+* updates mappings
+* tells CPU where tables are
+
+But the translation itself is hardware-accelerated.
+
+---
+
+# Where are the page tables relative to kernel/user space?
+
+Page tables are typically:
+
+* allocated by kernel
+* protected from user access
+* stored in physical RAM
+
+User programs cannot normally read or modify them directly.
+
+---
+
+# Multi-level page tables
+
+Modern systems use hierarchical tables because virtual address spaces are huge.
+
+Example on x86-64:
+
+```text id="kvn4lf"
+Virtual Address
+    ↓
+PML4
+    ↓
+PDPT
+    ↓
+PD
+    ↓
+PT
+    ↓
+Physical Page
+```
+
+Each step indexes another table.
+
+This avoids storing gigantic flat mappings.
+
+---
+
+# But wouldn’t this be slow?
+
+Yes — walking page tables in RAM every memory access would be very slow.
+
+So CPUs use a cache called:
+
+# TLB (Translation Lookaside Buffer)
+
+It stores recent translations:
+
+```text id="s9n4p8"
+virtual → physical
+```
+
+So most memory accesses avoid full page-table walks.
+
+---
+
+# Full picture
+
+```text id="2dfw5f"
+Your Go code
+    ↓
+virtual address
+    ↓
+CPU MMU
+    ↓
+TLB lookup
+    ↓ miss?
+page table walk using RAM
+    ↓
+physical RAM address
+    ↓
+memory access
+```
+
+---
+
+# Massive insight
+
+Modern programs almost never use physical addresses directly.
+
+Everything is virtualized.
+
+Even when your Go runtime allocates memory:
+
+```go id="vij6qq"
+make([]byte, 1024)
+```
+
+it gets:
+
+* virtual memory pages
+* mapped by kernel
+* translated by MMU
+* backed by physical RAM
+
+This virtual memory abstraction is one of the most important ideas in operating systems.
