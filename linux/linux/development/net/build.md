@@ -1141,3 +1141,504 @@ ip link show                     # check XDP attachment
 ```
 
 Save this reference for your notes — this is the complete path from zero to a working XDP/eBPF kernel dev environment.
+
+Got the full context. You have an existing KVM VM (`kernel-dev`) that was set up during this process, and you want to wipe it and start fresh. Here's the clean teardown + fresh start procedure:
+
+---
+
+## Teardown the Old VM
+
+### 1. Stop and remove the VM completely
+
+```bash
+# Stop the VM if it's running
+virsh destroy kernel-dev
+
+# Undefine (removes VM definition from libvirt)
+virsh undefine kernel-dev --remove-all-storage
+# --remove-all-storage  ← deletes the .qcow2 disk image too
+
+# Verify it's gone
+virsh list --all
+# kernel-dev should not appear
+```
+
+If the disk image was created manually (not managed by libvirt), delete it explicitly:
+
+```bash
+rm -f ~/kernel-dev/ubuntu-server-dev.qcow2
+```
+
+### 2. Clean up any leftover build artifacts on the host (optional)
+
+```bash
+# If you want a fully clean kernel build too:
+cd ~/kernel-dev/linux-7.0.6
+make mrproper       # removes .config + all build output
+
+# Or nuke the whole staging and module tarballs:
+rm -f /tmp/kmod-*.tar.gz /tmp/bzImage-*
+```
+
+---
+
+## Fresh Start
+
+From Phase 2 in your notes — just re-run from the VM creation step:
+
+```bash
+# 1. Fresh disk
+qemu-img create -f qcow2 ~/kernel-dev/ubuntu-server-dev.qcow2 40G
+
+# 2. Re-create VM (same virt-install command from PHASE 2)
+virt-install \
+    --name kernel-dev \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu22.04 \
+    --disk path=~/kernel-dev/ubuntu-server-dev.qcow2,bus=virtio \
+    --cdrom /path/to/ubuntu-server.iso \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics none \
+    --console pty,target.type=virtio \
+    --serial pty \
+    --extra-args "console=tty0 console=ttyS0,115200n8" \
+    --boot cdrom,hd
+```
+
+Then continue from **PHASE 3** (GRUB config, tools install, scp the VM's kernel config) as documented.
+
+---
+
+## Quick Reference: Common Virsh Commands
+
+| Task | Command |
+|---|---|
+| List all VMs | `virsh list --all` |
+| Stop (force) | `virsh destroy kernel-dev` |
+| Delete VM + disk | `virsh undefine kernel-dev --remove-all-storage` |
+| Delete VM only | `virsh undefine kernel-dev` |
+| Start VM | `virsh start kernel-dev` |
+| Serial console | `virsh console kernel-dev` |
+| Exit serial | `Ctrl + ]` |
+
+The key flag is `--remove-all-storage` — without it, `undefine` only removes the VM definition but leaves the disk image on disk.
+
+## Incremental Builds in the Linux Kernel
+
+The kernel build system (kbuild) is already incremental by default — `make` tracks timestamps and only recompiles what changed. The key is to never run `make mrproper` or `make clean` between iterations during active development.
+
+### The Basic Incremental Build
+
+```bash
+cd ~/kernel-dev/linux-7.0.6
+
+# After editing any file, just run this — kbuild figures out what changed
+make -j$(nproc)
+```
+
+If you edited `net/ipv4/tcp.c`, only `tcp.o` and the affected link steps re-run. A single file change typically takes 5–30 seconds.
+
+### Build Only a Specific Subsystem Directory
+
+```bash
+# Only rebuild the net/ subtree
+make -j$(nproc) M=net/
+
+# Only rebuild a specific subdirectory
+make -j$(nproc) M=net/ipv4/
+make -j$(nproc) M=net/core/
+make -j$(nproc) M=kernel/bpf/
+```
+
+This is the fastest path when you're working within a known subsystem. It skips all other directories entirely.
+
+### Build a Single .o File
+
+```bash
+# Rebuilds just that one translation unit
+make net/ipv4/tcp.o
+make kernel/bpf/verifier.o
+```
+
+Useful for checking if your file even compiles before doing a full build.
+
+### Build Only Modules (skip vmlinux relink if unchanged)
+
+```bash
+# Only rebuild kernel modules — skips vmlinux if core is untouched
+make -j$(nproc) modules
+```
+
+### Check What Would Be Rebuilt (dry run)
+
+```bash
+make -j$(nproc) --dry-run 2>&1 | head -40
+# Shows exactly which files kbuild would recompile without doing it
+```
+
+### Tracking What You Changed (git-based)
+
+Since you're working in a git tree:
+
+```bash
+# See what files you've modified vs upstream
+git diff --name-only
+
+# Build only the directories containing your changes
+git diff --name-only | sed 's|/[^/]*$||' | sort -u
+# Use the output to target M= builds
+
+# Example: if git says you touched net/ipv4/tcp.c and net/core/sock.c
+make -j$(nproc) M=net/
+```
+
+### The compile_commands.json for Editor Intelligence
+
+```bash
+# Generate compile_commands.json — used by clangd, nvim LSP, VS Code
+make -j$(nproc) compile_commands.json
+# or
+scripts/clang-tools/gen_compile_commands.py
+```
+
+This lets your editor know exactly how each file is compiled (flags, includes), so you get accurate jump-to-definition and error highlighting without running the full build.
+
+---
+
+## Ways to Load the Built Kernel Into the KVM VM
+
+There are four distinct methods, each with different tradeoffs.
+
+---
+
+### Method 1: SCP + GRUB (Standard, Most Reliable)
+
+This is what your `kdeploy` script does. It's the closest to how production kernel upgrades work.
+
+```bash
+KVER=$(make -s kernelversion)   # e.g. 7.0.6
+VM_USER=dev
+VM_IP=192.168.122.x
+
+# 1. Copy the kernel image
+scp arch/x86/boot/bzImage ${VM_USER}@${VM_IP}:/tmp/bzImage-${KVER}
+
+# 2. Install modules (modules_install writes to /lib/modules/<ver>/)
+STAGING=$(mktemp -d)
+make INSTALL_MOD_PATH=$STAGING modules_install
+tar -czf /tmp/kmod-${KVER}.tar.gz -C $STAGING .
+scp /tmp/kmod-${KVER}.tar.gz ${VM_USER}@${VM_IP}:/tmp/
+rm -rf $STAGING
+
+# 3. On the VM:
+ssh ${VM_USER}@${VM_IP} "bash -s" << REMOTE
+  sudo cp /tmp/bzImage-${KVER} /boot/vmlinuz-${KVER}
+  sudo tar -xzf /tmp/kmod-${KVER}.tar.gz -C /
+  sudo depmod ${KVER}
+  sudo update-initramfs -c -k ${KVER}
+  sudo update-grub
+  sudo grub-reboot "$(grep -i 'menuentry.*${KVER}' /boot/grub/grub.cfg | head -1 | sed "s/menuentry '\\([^']*\\)'.*/\\1/")"
+  sudo reboot
+REMOTE
+
+sleep 10
+virsh console kernel-dev
+```
+
+**When to use:** Reliable daily driver. The VM boots with a proper initramfs, all modules are in place, systemd is happy. Crash recovery is safe because GRUB only uses the new kernel once (`grub-reboot`) — a crash falls back to the previous kernel automatically.
+
+---
+
+### Method 2: QEMU Direct Kernel Boot (Fastest Iteration, No GRUB)
+
+QEMU can boot a kernel directly without it being installed inside the VM at all. You pass `bzImage` straight to QEMU from the host.
+
+First, get your VM's current domain XML:
+
+```bash
+virsh dumpxml kernel-dev > /tmp/kernel-dev.xml
+```
+
+Then boot with a direct kernel override:
+
+```bash
+virsh start kernel-dev \
+    --pass-fds 0 \
+    -- \
+    -kernel ~/kernel-dev/linux-7.0.6/arch/x86/boot/bzImage \
+    -append "root=/dev/vda1 console=tty0 console=ttyS0,115200n8 nokaslr"
+```
+
+Or with `qemu-kvm` directly (if you started the VM manually):
+
+```bash
+qemu-kvm \
+    -m 4096 -smp 4 \
+    -cpu host \
+    -drive file=~/kernel-dev/ubuntu-server-dev.qcow2,if=virtio \
+    -kernel arch/x86/boot/bzImage \
+    -append "root=/dev/vda1 rw console=tty0 console=ttyS0,115200n8 nokaslr" \
+    -nographic \
+    -serial mon:stdio \
+    -net nic,model=virtio -net user
+```
+
+For modules, you still need to either install them into the qcow2 disk or use a 9P virtio share:
+
+```bash
+# Mount host directory inside VM via 9P (no SCP needed for modules)
+# Add to qemu command:
+    -virtfs local,path=$STAGING,mount_tag=kmod_share,security_model=passthrough
+
+# Inside VM after boot:
+sudo mount -t 9p -o trans=virtio kmod_share /mnt/kmod
+sudo cp -r /mnt/kmod/lib/modules/${KVER} /lib/modules/
+sudo depmod ${KVER}
+```
+
+**When to use:** When you're iterating rapidly on early boot code, driver init, or anything that causes a panic before SSH is available. No need to touch GRUB or initramfs. The disk image is never written to — the VM's on-disk kernel is untouched.
+
+---
+
+### Method 3: kexec (Zero-Reboot Kernel Switch, Fastest Boot)
+
+`kexec` loads a new kernel into memory and jumps to it directly, skipping BIOS/UEFI and GRUB entirely. Boot time drops from ~15 seconds to ~2 seconds.
+
+```bash
+# On the VM — install kexec-tools once
+sudo apt install kexec-tools
+
+# On HOST — copy bzImage and modules as usual (scp or method 1 steps 1-2)
+# Then on VM:
+KVER=7.0.6
+
+sudo kexec \
+    --load /boot/vmlinuz-${KVER} \
+    --initrd /boot/initrd.img-${KVER} \
+    --append "root=/dev/vda1 rw console=tty0 console=ttyS0,115200n8 nokaslr"
+
+# Execute the switch immediately:
+sudo kexec -e
+```
+
+You can also do it in one shot with systemd:
+
+```bash
+sudo systemctl kexec
+# systemd detects a kexec-loaded kernel and switches to it cleanly
+```
+
+**When to use:** When you're iterating on net/ or bpf/ code that doesn't affect early boot — the common case. The 2-second boot vs 15-second boot adds up across dozens of test cycles per day. The downside: no GRUB fallback. If the new kernel panics immediately, you need `virsh reset kernel-dev` from the host.
+
+---
+
+### Method 4: Live Module Reload (No Reboot At All)
+
+If your change is in a part of the kernel that's built as a module (`=m`), you can reload just that module without rebooting at all.
+
+```bash
+# On HOST — build only the changed module
+make -j$(nproc) M=net/ipv4/
+
+# Find the resulting .ko file
+find net/ipv4/ -name "*.ko" -newer arch/x86/boot/bzImage
+
+# Copy just the module to VM
+scp net/ipv4/foo.ko ${VM_USER}@${VM_IP}:/tmp/
+
+# On VM — unload old, load new
+sudo rmmod foo
+sudo insmod /tmp/foo.ko
+
+# Or use modprobe if the module has dependencies:
+sudo cp /tmp/foo.ko /lib/modules/$(uname -r)/kernel/net/ipv4/
+sudo depmod
+sudo modprobe -r foo
+sudo modprobe foo
+
+# Check it loaded correctly
+lsmod | grep foo
+dmesg | tail -20
+```
+
+For VXLAN, GENEVE, GRE etc. — these are almost always modules. When you're tuning encapsulation behavior, this is the fastest path: edit → `make M=net/` → scp one `.ko` → `rmmod`/`insmod`. No reboot at all.
+
+**When to use:** Net tunnel drivers, BPF helper additions, anything where the changed code lives in a module. Check with `grep CONFIG_VXLAN .config` — if it says `=m`, you can use this method.
+
+---
+
+## Decision Map
+
+```
+What did you change?
+│
+├── Core net stack (tcp.c, sock.c, skbuff.c) — built-in, not a module
+│   └── kexec (Method 3) for speed, or SCP+GRUB (Method 1) for safety
+│
+├── A tunnel driver (vxlan, geneve, gre) — likely =m
+│   └── Live module reload (Method 4) — no reboot at all
+│
+├── BPF verifier / helpers — built-in
+│   └── kexec (Method 3)
+│
+├── Early boot / init / panic handler
+│   └── QEMU direct boot (Method 2) — serial from first byte
+│
+└── Anything that caused a hang/panic last boot
+    └── SCP+GRUB with grub-reboot (Method 1) — safe fallback guaranteed
+```
+
+---
+
+## Testing Checklist After Each Boot
+
+```bash
+# 1. Confirm you're on your kernel
+uname -r
+
+# 2. Check for any boot errors
+dmesg | grep -E "(BUG|WARNING|ERROR|panic)" | head -20
+
+# 3. BPF/XDP stack
+bpftool btf show | head -3        # BTF present?
+cat /proc/sys/net/core/bpf_jit_enable  # JIT on?
+ls /proc/net/xdp                  # AF_XDP available?
+
+# 4. Your modules loaded
+lsmod | grep -E "vxlan|geneve|veth"
+
+# 5. Net namespaces work
+sudo ip netns add test-ns
+sudo ip netns exec test-ns ip link show
+sudo ip netns del test-ns
+
+# 6. XDP attach on test NIC
+sudo ip link set dev ens4 xdp obj xdp_pass.o sec xdp
+sudo bpftool prog show
+sudo ip link set dev ens4 xdp off
+
+# 7. Drop monitor (if you enabled it)
+sudo modprobe drop_monitor
+sudo dropwatch -l kas
+```
+
+Yes, that command works correctly, but it has a subtle behavior worth understanding — and a couple of things to watch out for.
+
+## What That Command Actually Does
+
+```bash
+scp dev@192.168.122.x:/boot/config-$(ssh dev@192.168.122.x uname -r) \
+    ~/kernel-dev/linux-7.0.6/.config
+```
+
+The `$(ssh dev@192.168.122.x uname -r)` is evaluated **on the host** first — it opens a separate SSH connection to the VM, runs `uname -r`, substitutes the result (e.g. `6.8.0-57-generic`) into the path, then `scp` opens a second connection to copy the file. So it makes **two SSH connections**, which is harmless but slightly inefficient. A cleaner equivalent:
+
+```bash
+# Cleaner: get the version once, reuse it
+VM_KVER=$(ssh dev@192.168.122.x uname -r)
+scp dev@192.168.122.x:/boot/config-${VM_KVER} ~/kernel-dev/linux-7.0.6/.config
+```
+
+## The Real Issues to Watch For
+
+**1. Ubuntu signing keys will break your build**
+
+Ubuntu's kernel config has certificate paths baked in that don't exist on your host. Without disabling them, the build will fail. Always run these right after the scp:
+
+```bash
+cd ~/kernel-dev/linux-7.0.6
+
+# Resolve new options from 6.8 → 7.0.6
+make olddefconfig
+
+# Disable Ubuntu-specific signing config
+scripts/config --disable SYSTEM_TRUSTED_KEYS
+scripts/config --disable SYSTEM_REVOCATION_KEYS
+scripts/config --disable MODULE_SIG_KEY
+scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
+scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
+
+make olddefconfig   # run again after changes
+```
+
+**2. You're using a 6.8 config to build 7.0.6**
+
+`make olddefconfig` handles this — it keeps all your existing options and sets new 7.0.6-specific options to their safe defaults. But verify nothing critical was silently set wrong:
+
+```bash
+# Quick sanity check after olddefconfig
+for opt in BPF_SYSCALL XDP_SOCKETS VIRTIO_NET DEBUG_INFO_BTF SERIAL_8250_CONSOLE NET_NS; do
+    printf "%-35s %s\n" "CONFIG_${opt}" "$(grep CONFIG_${opt}= .config | head -1)"
+done
+```
+
+**3. The config is correct for this VM specifically**
+
+This is actually the *right* approach — pulling from the VM means virtio drivers, serial console, and systemd requirements are already satisfied. Using `make x86_64_defconfig` would miss VM-specific things and likely fail to boot.
+
+## Summary
+
+| Step | Status |
+|---|---|
+| Command works | Yes |
+| Two SSH connections | Harmless, just be aware |
+| `make olddefconfig` after scp | Mandatory |
+| Disable signing keys | Mandatory |
+| Good base for this VM | Yes — better than defconfig |
+
+This is actually great news for your setup. Here's what it means:
+
+## Ubuntu 24.04 LTS vs 26.04 LTS — What Changes
+
+| | Ubuntu 24.04 | Ubuntu 26.04 |
+|---|---|---|
+| Ships with kernel | 6.8.x | **7.0** |
+| Config gap to build 7.0.6 | Large (6.8 → 7.0.6) | **Minimal (7.0 → 7.0.6)** |
+| `make olddefconfig` work | Fills many new options with defaults | Almost nothing new to fill |
+| Risk of missing options | Higher | Lower |
+
+---
+
+## If You're on Ubuntu 26.04 (recommended)
+
+Ubuntu 26.04 ships with Linux Kernel 7.0 by default, which means your VM's `/boot/config-*` is already a 7.0 config. When you scp it and run `make olddefconfig` against kernel 7.0.6, the config gap is tiny — just patch-level changes between 7.0 and 7.0.6. Almost nothing gets filled with unknown defaults.
+
+```bash
+# On VM — confirm your kernel version
+uname -r
+# 7.0.x-xx-generic   ← if 26.04
+
+# The scp command works perfectly and the config is nearly identical to 7.0.6
+VM_KVER=$(ssh dev@192.168.122.x uname -r)
+scp dev@192.168.122.x:/boot/config-${VM_KVER} ~/kernel-dev/linux-7.0.6/.config
+
+make olddefconfig   # almost no new options to fill — clean
+```
+
+Also worth noting: Ubuntu 26.04 ships with sched_ext support — the eBPF-based scheduling system — and crash dumps (kdump) enabled by default, so those will already be in the config you pull.
+
+---
+
+## If You're on Ubuntu 24.04 LTS
+
+The config ships with kernel 6.8, so the gap to 7.0.6 is larger. `make olddefconfig` handles it, but you should double-check critical options manually after:
+
+```bash
+# These are the areas where 6.8 → 7.0 added new Kconfig options
+# Verify they got set how you want after olddefconfig:
+for opt in BPF_SYSCALL XDP_SOCKETS DEBUG_INFO_BTF VIRTIO_NET \
+           SERIAL_8250_CONSOLE NET_NS SCHED_CLASS_EXT; do
+    printf "%-35s %s\n" "CONFIG_${opt}" "$(grep CONFIG_${opt}= .config | head -1)"
+done
+```
+
+`CONFIG_SCHED_CLASS_EXT` (sched_ext) is a notable 7.0 addition — it won't exist in the 24.04 config and `olddefconfig` will set it to a default you should verify.
+
+---
+
+## Recommendation
+
+**Use 26.04** if you haven't installed the VM yet. The kernel version match alone eliminates an entire class of config problems, and you get a better eBPF/XDP environment out of the box.

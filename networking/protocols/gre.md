@@ -189,12 +189,12 @@ Full wire layout:
 Byte:  0         1         2         3         4         5         6         7
        01234567  89012345  67890123  45678901  01234567  89012345  67890123  45678901
       +--------+--------+--------+--------+--------+--------+--------+--------+
-      |Version |  IHL   |   DSCP   | ECN   |         Total Length            |
-      |  4     |  5     |  (TOS)          |                                  |
+      |Version |  IHL   |   DSCP | ECN    |         Total Length              |
+      |  4     |  5     |  (TOS)          |                                   |
       +--------+--------+--------+--------+--------+--------+--------+--------+
       |         Identification          |Flags|    Fragment Offset            |
       +--------+--------+--------+--------+--------+--------+--------+--------+
-      |   TTL  | Proto=47|        Header Checksum              |              |
+      |   TTL  | Proto=47|        Header Checksum                             |
       +--------+--------+--------+--------+--------+--------+--------+--------+
       |              Source IP (Tunnel Source = Outer Src)                    |
       +--------+--------+--------+--------+--------+--------+--------+--------+
@@ -202,9 +202,9 @@ Byte:  0         1         2         3         4         5         6         7
       +=======================================================================+
       |||||||||||||||||||  GRE HEADER BEGINS HERE  |||||||||||||||||||||||||||
       +=======================================================================+
-      |C|R|K|S|s|Recur|  Flags  |           Protocol Type                   |
+      |C|R|K|S|s|Recur|  Flags  |           Protocol Type                     |
       +--------+--------+--------+--------+--------+--------+--------+--------+
-      |                  Checksum (if C=1)         |       Reserved          |
+      |                  Checksum (if C=1)         |       Reserved           |
       +--------+--------+--------+--------+--------+--------+--------+--------+
       |                    Key (if K=1, 32 bits)                              |
       +--------+--------+--------+--------+--------+--------+--------+--------+
@@ -212,7 +212,7 @@ Byte:  0         1         2         3         4         5         6         7
       +=======================================================================+
       |||||||||||||||||||  INNER PACKET BEGINS HERE  |||||||||||||||||||||||||
       +=======================================================================+
-      |   Inner IP Header (Version, TTL, Src, Dst of REAL traffic)           |
+      |   Inner IP Header (Version, TTL, Src, Dst of REAL traffic)            |
       +--------+--------+--------+--------+--------+--------+--------+--------+
       |   Inner Payload (TCP/UDP/ICMP/etc.)                                   |
       +--------+--------+--------+--------+--------+--------+--------+--------+
@@ -308,7 +308,7 @@ GRE Header (RFC 2784 — minimum 4 bytes, flags extend it):
 - A **16-bit EtherType value** identifying the passenger protocol
 - This is the same EtherType used in Ethernet frames!
 
-| Protocol Type Value | Passenger Protocol |
+| Protocol Type Value | Passenger Protocol|
 |---------------------|-------------------|
 | 0x0800              | IPv4              |
 | 0x86DD              | IPv6              |
@@ -379,12 +379,12 @@ STEP 1: Host A sends a normal packet
 =====================================
 Host A creates:
 +------------------------------------------+
-| Src: 10.1.1.10  | Dst: 10.2.2.20        |  <- Inner IP Header
+| Src: 10.1.1.10  | Dst: 10.2.2.20         |  <- Inner IP Header
 | Proto: TCP       | TTL: 64               |
 +------------------------------------------+
-| TCP Header: Src Port 12345, Dst Port 80   |
+| TCP Header: Src Port 12345, Dst Port 80  |
 +------------------------------------------+
-| HTTP Data: "GET / HTTP/1.1"               |
+| HTTP Data: "GET / HTTP/1.1"              |
 +------------------------------------------+
 Host A sends this to its gateway: Router A (10.1.1.1)
 
@@ -399,19 +399,19 @@ STEP 3: Router A ENCAPSULATES the packet
 Router A builds a GRE header and a new outer IPv4 header:
 
 +------------------------------------------+
-| Outer IPv4 Header:                        |
+| Outer IPv4 Header:                       |
 | Src: 203.0.113.1 (my physical IP)        |
 | Dst: 198.51.100.1 (remote router phys IP)|
-| Protocol: 47 (GRE)                        |
-| TTL: 255                                  |
+| Protocol: 47 (GRE)                       |
+| TTL: 255                                 |
 +------------------------------------------+
-| GRE Header:                               |
-| Flags: 0x0000 (no checksum/key/seq)       |
-| Protocol Type: 0x0800 (IPv4 passenger)    |
+| GRE Header:                              |
+| Flags: 0x0000 (no checksum/key/seq)      |
+| Protocol Type: 0x0800 (IPv4 passenger)   |
 +------------------------------------------+
-| ORIGINAL PACKET (now the inner payload):  |
+| ORIGINAL PACKET (now the inner payload): |
 | Inner IPv4: Src 10.1.1.10, Dst 10.2.2.20 |
-| TCP + HTTP data                           |
+| TCP + HTTP data                          |
 +------------------------------------------+
 
 STEP 4: Outer packet traverses the Internet

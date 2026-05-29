@@ -63,7 +63,7 @@ The key phrase is "suite of protocols" — IPSec is like a toolbox containing mu
 
 ### What IPSec Provides (The CIA Triad + More)
 
-```
+
 | Property | Meaning | IPSec Mechanism |
 |---|---|---|
 | **Confidentiality** | Data is encrypted; only intended parties can read it | ESP Encryption |
@@ -71,7 +71,7 @@ The key phrase is "suite of protocols" — IPSec is like a toolbox containing mu
 | **Authentication** | You are who you say you are | IKE + Digital Certs / PSK |
 | **Anti-Replay** | Old/duplicate packets are rejected | Sequence Numbers |
 | **Key Management** | Keys are securely negotiated and refreshed | IKE Protocol |
-```
+
 
 ### What IPSec Is NOT
 
@@ -241,12 +241,12 @@ Think of an SA as a **contract between two peers**:
 +-----------+                              +-----------+
 |  Peer A   |                              |  Peer B   |
 |           |                              |           |
-| SA #1001|<----Direction A→B------->    | SA #1001|
+| SA 1001   |<----  Direction A→B  ------->| SA 1001   |
 |  SPI=101  |                              |  SPI=101  |
 |  AES-256  |                              |  AES-256  |
 |  Key=0xAB |                              |  Key=0xAB |
 |           |                              |           |
-| SA #1002|<------ Direction B→A   ------| SA #1002|
+| SA 1002   |<------ Direction B→A  ------>| SA 1002   |
 |  SPI=202  |                              |  SPI=202  |
 |  AES-256  |                              |  AES-256  |
 |  Key=0xCD |                              |  Key=0xCD |
