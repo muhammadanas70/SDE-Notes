@@ -11196,3 +11196,345 @@ echo -e "  5. If VM exists but old kernel: scp .deb files into VM, dpkg -i, rebo
 echo -e "  6. Inside VM: sudo apt install tshark trace-cmd bpftrace gdb tmux${NC}"
 echo
 ```
+
+The error is straightforward — your local `osinfo-db` (the database `virt-install` uses to validate `--os-variant`) doesn't have an entry for `ubuntu26.04` yet, or it just isn't a valid identifier even on an up-to-date db.
+
+Notice the guide itself uses `ubuntu22.04`, not `ubuntu26.04`. You changed it to match your ISO, which is the right instinct — but the osinfo variant name and the ISO version are decoupled.
+
+**Fix — two steps:**
+
+**1. Update your osinfo-db first:**
+```bash
+sudo apt update && sudo apt install -y osinfo-db osinfo-db-tools
+```
+
+**2. Check what's actually available:**
+```bash
+osinfo-query os | grep -i ubuntu
+```
+
+If `ubuntu26.04` shows up after the update, use it. If not (which is likely — LTS releases take a while to land in the db), just use `ubuntu24.04` as a drop-in:
+
+```bash
+virt-install \
+    --name linuxnet \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu24.04 \          # ← changed
+    --disk path=~/vms/linuxnet.qcow2,bus=virtio \
+    --cdrom /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics none \
+    --console pty,target.type=virtio \
+    --serial pty \
+    --extra-args "console=tty0 console=ttyS0,115200n8" \
+    --boot cdrom,hd
+```
+
+`--os-variant` is just optimization hints to QEMU (timers, drivers, balloon memory, etc.) — it does **not** control what actually installs. Using `ubuntu24.04` while booting a 26.04 ISO is perfectly fine; the installer on the ISO determines what gets installed, not this flag.
+
+This is a `--cdrom` vs `--location` conflict. Here's what's happening:
+
+- `--cdrom` hands the ISO directly to QEMU as a raw CD-ROM device — `virt-install` never touches the kernel inside it, so it has nowhere to inject `--extra-args`
+- `--extra-args` only works with `--location`, which makes `virt-install` extract the kernel/initrd from the ISO and boot them directly, allowing it to append kernel command-line args
+
+**Fix — swap `--cdrom` for `--location` with explicit kernel paths:**
+
+```bash
+virt-install \
+    --name linuxnet \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu24.04 \
+    --disk path=~/vms/linuxnet.qcow2,bus=virtio \
+    --location /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso,kernel=casper/vmlinuz,initrd=casper/initrd \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics none \
+    --console pty,target.type=virtio \
+    --serial pty \
+    --extra-args "console=tty0 console=ttyS0,115200n8" \
+    --boot cdrom,hd
+```
+
+The `,kernel=casper/vmlinuz,initrd=casper/initrd` suffix tells `virt-install` where to find those files inside the ISO. Ubuntu Server ISOs (20.04 onward) consistently use the `casper/` path.
+
+**If you're unsure of the paths inside your specific ISO, verify first:**
+
+```bash
+# Mount the ISO and check
+sudo mount -o loop /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso /mnt
+ls /mnt/casper/
+# should show: vmlinuz  initrd  filesystem.squashfs  ...
+sudo umount /mnt
+```
+
+If the files are there, the command above will work. The serial console (`ttyS0`) args are then properly injected into the installer's kernel cmdline, which is exactly what you need for `virsh console` to show the Ubuntu installer.
+
+Found the exact difference. The `setup.md` command that worked is:
+
+```bash
+virt-install \
+  --cdrom ubuntu-24.04.4-live-server-amd64.iso \
+  --graphics vnc,listen=127.0.0.1 \   # ← VNC, no --extra-args
+  --serial pty
+```
+
+Yours that's failing is:
+
+```bash
+virt-install \
+  --cdrom ubuntu-26.04...iso \
+  --graphics none \                              # ← headless
+  --extra-args "console=tty0 console=ttyS0..."  # ← this is the conflict
+```
+
+**The rule is simple:** `--extra-args` requires `--location`. It has always been this way. The `setup.md` guide never triggered this error because it has **no `--extra-args`** — it uses VNC for the installer UI instead of serial.
+
+You have two clean options:
+
+---
+
+**Option A — Match what setup.md did (use VNC for installer, configure serial in GRUB after)**
+
+```bash
+virt-install \
+    --name linuxnet \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu24.04 \
+    --disk path=~/vms/linuxnet.qcow2,bus=virtio \
+    --cdrom /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics vnc,listen=127.0.0.1 \
+    --serial pty
+```
+
+Connect with `virt-viewer linuxnet` to complete the install, then configure serial in `/etc/default/grub` afterward (as the guide's Phase 3 describes).
+
+---
+
+**Option B — Stay headless, switch `--cdrom` to `--location`**
+
+```bash
+virt-install \
+    --name linuxnet \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu24.04 \
+    --disk path=~/vms/linuxnet.qcow2,bus=virtio \
+    --location /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso,kernel=casper/vmlinuz,initrd=casper/initrd \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics none \
+    --console pty,target.type=virtio \
+    --serial pty \
+    --extra-args "console=tty0 console=ttyS0,115200n8" \
+    --boot cdrom,hd
+```
+
+**Option A is easier** since it matches the proven working pattern from `setup.md`. Option B is what `build.md` intended but it requires `--location` which has the `casper/` path dependency we verified earlier.
+
+Clear. Since you configure serial console manually after install (following that guide), you don't need `--extra-args` at all — that was only needed to get serial console working *during* the installer. Remove it and the whole conflict disappears.
+
+Just use VNC for the installer UI, install normally, then do the console setup afterward:
+
+```bash
+qemu-img create -f qcow2 ~/vms/linuxnet.qcow2 40G
+
+virt-install \
+    --name linuxnet \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu24.04 \
+    --disk path=~/vms/linuxnet.qcow2,bus=virtio \
+    --cdrom /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics vnc,listen=127.0.0.1 \
+    --serial pty
+```
+
+Connect to the installer:
+```bash
+virt-viewer linuxnet
+```
+
+Complete the Ubuntu install, then follow your `console.md` guide inside the VM to set up `ttyS0`. After that, drop VNC entirely and use `virsh console linuxnet` as your permanent control channel — exactly as your workflow describes.
+
+`libvirt-qemu` (the user QEMU runs as) can't traverse your home directory. Two fixes:
+
+---
+
+**Quick fix — one command, unblocks immediately:**
+```bash
+chmod o+x /home/iamdreamer
+```
+This adds only the *traverse* (search) bit for others — it doesn't expose your file contents, just lets `libvirt-qemu` walk into the directory path. Then retry `virt-install`.
+
+---
+
+**Proper fix for a dev machine — run QEMU as your own user:**
+```bash
+sudo nano /etc/libvirt/qemu.conf
+```
+Find and uncomment these two lines:
+```
+user = "iamdreamer"
+group = "iamdreamer"
+```
+Then restart:
+```bash
+sudo systemctl restart libvirtd
+```
+
+This means QEMU runs as you, so it can access anything you can — no permission friction ever again for any file in your home directory. For a personal kernel dev machine this is the right call.
+
+---
+
+Also make sure the disk and vms directory exist before running `virt-install`:
+```bash
+mkdir -p ~/vms
+qemu-img create -f qcow2 ~/vms/linuxnet.qcow2 40G
+```
+
+The quick fix gets you going right now. Apply the proper fix after the install if you want a permanent clean setup.
+
+No, it won't break anything. Here's exactly what it does and doesn't do:
+
+**What `o+x` on a directory means:**
+- `x` on a directory = *traverse* permission — allows walking through it to reach a path inside
+- It does **not** add `r` (read), so other users still **cannot list** your home directory contents with `ls`
+- They can only access something inside if they already know the exact path
+
+**Before vs after:**
+```
+Before:  drwx------   (700)  only you can enter
+After:   drwx--x--x   (711)  only you can list; others can traverse
+```
+
+**On your machine specifically** — it's a personal dev machine with effectively one human user. The only "other" entity that benefits here is `libvirt-qemu` (a system service). There are no other human users to worry about.
+
+**Files inside are unaffected** — your `~/.ssh`, `~/.gnupg`, your documents — they all keep their own permissions. `chmod o+x` on the directory does nothing to what's inside.
+
+---
+
+That said, the **proper fix from qemu.conf is still cleaner** because:
+- It doesn't change any filesystem permissions at all
+- QEMU runs as you, so it can access your files the same way you can
+- No exposure whatsoever, even theoretical
+
+For a personal kernel dev machine I'd just do the `qemu.conf` fix and not touch home directory permissions at all. But if you want to get going immediately, `chmod o+x /home/iamdreamer` is harmless on your setup.
+
+Good catch. The real difference is simpler than permissions — the `setup.md` guide created the disk **before** running `virt-install`:
+
+```bash
+qemu-img create -f qcow2 ~/vms/netlab.qcow2 40G   # ← this ran first
+virt-install --disk ~/vms/netlab.qcow2 ...
+```
+
+You skipped that step this time. When the file doesn't exist, `virt-install` tries to create it **as `libvirt-qemu`**, which can't write into your home directory — hence the error. When the file already exists (created by you), libvirt just opens it, which works fine.
+
+Don't bother with `chmod`. Just create the disk first:
+
+```bash
+mkdir -p ~/vms
+qemu-img create -f qcow2 ~/vms/linuxnet.qcow2 40G
+```
+
+Then run `virt-install` exactly as before — it'll work the same way setup.md did.
+
+```bash
+chmod o-x /home/iamdreamer
+```
+
+That's it. Removes exactly what was added, back to `drwx------` (700).
+
+The reason it worked before is Ubuntu changed default home directory permissions in newer versions. Older Ubuntu set home dirs to `755` by default — libvirt-qemu could traverse freely. Newer Ubuntu sets them to `700` — it can't. Your previous setup was on an older Ubuntu or had different defaults.
+
+This is a permanent system-level change, not something you did wrong. The `qemu.conf` fix is the right solution:
+
+```bash
+sudo nano /etc/libvirt/qemu.conf
+```
+
+Find these two lines (they exist but are commented out with `#`):
+
+```
+#user = "root"
+#group = "root"
+```
+
+Change them to:
+
+```
+user = "iamdreamer"
+group = "iamdreamer"
+```
+
+Then restart libvirt:
+
+```bash
+sudo systemctl restart libvirtd
+```
+
+Now retry:
+
+```bash
+virt-install \
+    --name linuxnet \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu24.04 \
+    --disk path=~/vms/linuxnet.qcow2,bus=virtio \
+    --cdrom /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics vnc,listen=127.0.0.1 \
+    --serial pty
+```
+
+QEMU will now run as you, so it can access anything you can — no permission issues ever again for any file in your home directory.
+
+I can see the exact lines. Run these two commands — no need to manually edit:
+
+```bash
+sudo sed -i 's/#user = "libvirt-qemu"/user = "iamdreamer"/' /etc/libvirt/qemu.conf
+sudo sed -i 's/#group = "kvm"/group = "iamdreamer"/'        /etc/libvirt/qemu.conf
+```
+
+Verify it took:
+```bash
+grep -E '^user|^group' /etc/libvirt/qemu.conf
+```
+
+Should show:
+```
+user = "iamdreamer"
+group = "iamdreamer"
+```
+
+Then restart and retry:
+```bash
+sudo systemctl restart libvirtd
+virt-install \
+    --name linuxnet \
+    --ram 4096 \
+    --vcpus 4 \
+    --cpu host-passthrough \
+    --os-variant ubuntu24.04 \
+    --disk path=~/vms/linuxnet.qcow2,bus=virtio \
+    --cdrom /home/iamdreamer/Documents/clion/opensource_sushink70/vanila_kernel_and_iso/ubuntu-26.04-live-server-amd64.iso \
+    --network network=default,model=virtio \
+    --network network=default,model=virtio \
+    --graphics vnc,listen=127.0.0.1 \
+    --serial pty
+```
