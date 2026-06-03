@@ -1415,4 +1415,430 @@ Tell me what `__be32` means as a type annotation and why the kernel uses it inst
 
 Both of these take 10 minutes. The toolchain installs take longer. Read while it compiles.
 
-installation all good. I do not have any idea about those you asked.
+Good — toolchain cleared. That was the mechanical blocker.
+
+Now let me teach byte order and `__be32` directly. This is knowledge you will use in every networking program you ever write. It belongs in your permanent mental model.
+
+---
+
+## Byte Order — Taught From First Principles
+
+Every multi-byte integer has a storage order question: which byte goes into the lowest memory address?
+
+Two conventions exist in the world:
+
+**Big-endian** — most significant byte at the lowest address.
+`0xC0A87A01` stored as: `[C0] [A8] [7A] [01]`
+Read left to right, the biggest piece of the number comes first. Like how humans read numbers: the "hundreds" position is written before the "units" position.
+
+**Little-endian** — least significant byte at the lowest address.
+`0xC0A87A01` stored as: `[01] [7A] [A8] [C0]`
+x86 CPUs work this way. When your CPU reads those four bytes from memory, it assembles them `[C0] [A8] [7A] [01]` → no wait, it reads `[01]` first as the low byte, giving `0xC0A87A01`. Actually I need to be more careful here. Let me be precise.
+
+Take IP address `192.168.122.1`. Represent it as a 32-bit integer:
+
+```
+192  → 0xC0
+168  → 0xA8
+122  → 0x7A
+  1  → 0x01
+
+Packed: 0xC0_A8_7A_01
+```
+
+**How this sits in a packet buffer on the wire (big-endian, per the IP spec):**
+
+```
+memory address:  [base+0]  [base+1]  [base+2]  [base+3]
+byte value:       0xC0      0xA8      0x7A       0x01
+as decimal:        192       168       122          1
+```
+
+The first byte on the wire is `0xC0` (192). Makes sense — that is the most significant octet of the address.
+
+**How your x86 CPU reads those same 4 bytes as a `u32`:**
+
+x86 is little-endian. When it reads 4 bytes starting at `base+0` as a 32-bit integer, it puts `base+0` as the **least** significant byte:
+
+```
+byte at base+0 = 0xC0 → goes into bits 31:24 ... no wait.
+
+x86 little-endian: base+0 is the LEAST significant byte.
+base+0 = 0xC0 → bits  7:0
+base+1 = 0xA8 → bits 15:8
+base+2 = 0x7A → bits 23:16
+base+3 = 0x01 → bits 31:24
+
+Assembled integer: 0x01_7A_A8_C0  ← this is what (*iph).saddr holds on x86
+```
+
+`0x017AA8C0` as a decimal: `24,948,928`. Meaningless as an IP address if you interpret it in host byte order.
+
+**Now the map key problem becomes concrete:**
+
+Your user-space code does:
+```rust
+let ip: Ipv4Addr = "192.168.122.1".parse().unwrap();
+let key = u32::from(ip);   // = 0xC0A87A01  (Rust's from() gives host order on any platform)
+```
+
+Your XDP program does:
+```rust
+let key = unsafe { (*iph).saddr };  // = 0x017AA8C0  (raw wire bytes read as LE integer)
+```
+
+`0xC0A87A01 ≠ 0x017AA8C0`. The map lookup never matches. Your firewall silently passes everything. No panic, no error, no verifier rejection. This is why byte order bugs are dangerous.
+
+**The fix — one line in user-space, zero changes to XDP:**
+
+```rust
+// User-space: insert with to_be() — swap to network byte order
+let key = u32::from(ip).to_be();
+// on LE (x86): 0xC0A87A01 → byte-swapped → 0x01_7A_A8_C0
+// stored in memory as: [C0] [A8] [7A] [01]  ← matches wire bytes ✓
+map.insert(&key, &1u32, 0)?;
+```
+
+`to_be()` on a little-endian machine is a byte-swap. On a big-endian machine it is a no-op. Portable. Convention: **keep IP addresses in map keys in network byte order. XDP uses packet fields raw. User-space calls `.to_be()` before inserting.**
+
+---
+
+## `__be32` — What It Is and Why The Kernel Uses It
+
+Open this on your guest:
+```bash
+grep -n "__be32\|__bitwise" /usr/include/linux/types.h | head -20
+```
+
+You will see something like:
+```c
+typedef __u32 __bitwise __be32;
+```
+
+Two things happening here:
+
+**`__u32`** — the actual storage type. A 32-bit unsigned integer. No semantic meaning beyond storage size.
+
+**`__bitwise`** — a sparse annotation. Sparse is the kernel's static analysis tool. `__bitwise` tells sparse: "this integer has a specific bit-order interpretation — do not silently mix it with plain integers of the same size." If you try to assign a plain `u32` (host order) to a `__be32` (big-endian) variable without an explicit cast, sparse warns you. This catches byte-order bugs at compile time during kernel development.
+
+At runtime, `__be32` and `u32` are identical — same storage, same instructions. The annotation is purely for the programmer and the static analyzer.
+
+This is a **type-system documentation pattern**. The kernel uses:
+- `__be32` — big-endian (network byte order) 32-bit
+- `__le32` — little-endian 32-bit
+- `__u32` — unspecified byte order (use when you're doing bit manipulation and order doesn't matter)
+
+In the IPv4 header struct (`/usr/include/linux/ip.h`):
+```c
+struct iphdr {
+    ...
+    __be32  saddr;   // source address — declared BE, documents it's wire order
+    __be32  daddr;   // destination address — same
+};
+```
+
+The `__be32` annotation on `saddr` is the kernel developer's way of leaving a note: *"whoever reads this field, you are holding a big-endian value. Call `ntohl()` before using it as a host-order integer."*
+
+In Rust/Aya, there is no equivalent type-level annotation — `u32` is just `u32`. This means the discipline has to live in your head and in code comments. That is why I documented the invariant explicitly.
+
+---
+
+## Current State — Where We Are
+
+Toolchain is installed. Mental model on byte order is now established. IP options policy is decided (pass without filtering in v1, revisit in v2). We have a concrete test case.
+
+**Next step: scaffold and read, not build.**
+
+Run this now:
+```bash
+cd ~
+cargo generate https://github.com/aya-rs/aya-template
+```
+
+When prompted:
+- Project name: `xdp-firewall`
+- Program type: `xdp`
+
+After it finishes, do not build anything yet. Run these four reads:
+```bash
+cat ~/xdp-firewall/Cargo.toml
+cat ~/xdp-firewall/xdp-firewall-ebpf/.cargo/config.toml
+cat ~/xdp-firewall/xdp-firewall-ebpf/src/main.rs
+cat ~/xdp-firewall/xdp-firewall/src/main.rs
+```
+
+Share all four outputs here verbatim. Reading the scaffold before touching it is the discipline — it tells you what the template already gives you, which determines what you still need to write. The `.cargo/config.toml` in particular teaches you something important about how the two compilation targets are wired.
+
+Good. Four files read. Now let me walk you through what each one is telling you, because there are real design decisions embedded in this scaffold. This is how you read unfamiliar code — you ask "why is this here, what problem does it solve?"
+
+---
+
+## You Missed One Critical File
+
+You read `.cargo/config.toml` at the workspace root. That is **not** the important one. Run this:
+
+```bash
+cat ~/xdp-firewall/xdp-firewall-ebpf/.cargo/config.toml
+```
+
+That file, inside the eBPF crate, is what actually tells Cargo to compile to the BPF virtual machine instead of x86. Without understanding it, the two-compilation-target model is incomplete. Share its output.
+
+---
+
+## Walking Through Each File
+
+### `xdp-firewall-ebpf/src/main.rs` — The Kernel-Side Program
+
+**`#![no_std]` and `#![no_main]`**
+
+The BPF virtual machine has no operating system underneath it. No `malloc`, no `println!`, no threads, no files, no network sockets. The `no_std` attribute tells the Rust compiler: do not link the standard library. You only get `core` — the subset of Rust that has zero OS dependencies (basic types, iterators, formatting, nothing that requires a heap or an OS call).
+
+This is the same constraint as embedded firmware. If you ever try to use `Vec`, `String`, `Box`, or anything that allocates from the heap inside the eBPF crate, you will get a compile error immediately. That is correct behavior.
+
+**The two-function pattern**
+
+```rust
+pub fn xdp_firewall(ctx: XdpContext) -> u32 {
+    match try_xdp_firewall(ctx) {
+        Ok(ret) => ret,
+        Err(_) => xdp_action::XDP_ABORTED,
+    }
+}
+fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, u32> { ... }
+```
+
+The outer function is the BPF entry point — it must return a `u32` verdict. The inner function returns `Result` so you can use `?` for early returns on parse errors. This is idiomatic Aya. When a packet fails a bounds check (`data + ETH_LEN > data_end`), the inner function returns `Err(XDP_PASS)` and the outer function passes the packet. If something unexpected goes wrong, `XDP_ABORTED` drops the packet and fires a tracepoint for debugging.
+
+**`XDP_ABORTED` vs `XDP_PASS` on error**
+
+Think carefully about this choice. `XDP_PASS` on error is the safe default — unrecognized packets reach the network stack. `XDP_ABORTED` is more visible — it fires a trace event you can capture with `bpftool` or `perf`. For production, you want `XDP_PASS` on parse failures for traffic you don't recognize (IPv6, ARP, etc.) and `XDP_ABORTED` on true internal errors. The scaffold uses `XDP_ABORTED` as a catch-all. We will refine this.
+
+**The LICENSE section**
+
+```rust
+#[unsafe(link_section = "license")]
+static LICENSE: [u8; 13] = *b"Dual MIT/GPL\0";
+```
+
+BPF programs must declare a license. The kernel BPF subsystem uses this to gate access to GPL-only helper functions. Some helpers — like `bpf_probe_read`, certain tracing helpers — are GPL-only. Without `GPL` in the license string, the verifier rejects programs that call them. `Dual MIT/GPL` gives you full access. This is not optional and not about open-source licensing of your code — it is a kernel API access mechanism.
+
+**The panic handler**
+
+```rust
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+```
+
+BPF programs cannot panic in the normal sense — there is no unwinding, no OS signal, no abort syscall available. This handler loops forever, but in practice the BPF verifier rejects programs that can reach an infinite loop (it requires all paths to terminate). So this handler exists to satisfy the Rust compiler's requirement that a `#[panic_handler]` exists — but the verifier guarantees it is never actually reached.
+
+---
+
+### `xdp-firewall/src/main.rs` — The User-Space Control Plane
+
+**`include_bytes_aligned!`**
+
+```rust
+let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(
+    concat!(env!("OUT_DIR"), "/xdp-firewall")
+))?;
+```
+
+This is a Rust macro that embeds a file as raw bytes **at compile time**. When you run `cargo build`, the build system compiles the BPF program separately, produces a BPF ELF file, and the user-space binary then literally contains those bytes baked in. At runtime, `Ebpf::load()` takes those bytes and loads them into the kernel via `bpf(BPF_PROG_LOAD, ...)`.
+
+The consequence: your user-space binary is self-contained. You ship one binary, it carries the BPF program inside it. No separate `.o` file to deploy.
+
+**The rlimit call**
+
+Pre-kernel 5.11, BPF maps were subject to `RLIMIT_MEMLOCK` — a per-process limit on locked memory. Loading large maps would fail with `EPERM`. The kernel 5.11 memcg patch removed this constraint. You are on kernel 7.x, so this call is a no-op. But the scaffold keeps it for portability. Note it for what it is — defensive compatibility code, not a bug.
+
+**`XdpMode::default()` and the error message**
+
+```rust
+program.attach(&iface, XdpMode::default())
+    .context("...try changing XdpMode::default() to XdpMode::Skb")?;
+```
+
+The comment tells you what will happen if native XDP is not available on the interface — you get a descriptive error telling you to fall back to `XdpMode::Skb`. Your interface is `enp2s0` with `virtio_net` on kernel 7.x — native XDP works. But note this for when you're testing on other interfaces.
+
+**`tokio::main` and async**
+
+The user-space program is async because it needs to do two things concurrently: run the event loop reading BPF log messages AND wait for Ctrl-C. The `EbpfLogger` task runs in a spawned async task. This is not complex async work — it is using tokio for its reactor and clean signal handling. Do not overthink it.
+
+---
+
+### `xdp-firewall-common/src/lib.rs`
+
+```rust
+#![no_std]
+```
+
+Empty except for `no_std`. This is intentional. The common crate must compile for both the BPF target (no OS) and x86 (with OS). `no_std` enforces that constraint — if you accidentally use something OS-specific in common, you get a compile error on the BPF target. This crate will hold our map key and value structs. Nothing else.
+
+---
+
+## Three Things To Think About From This Reading
+
+**1. How does the BPF ELF get into `OUT_DIR`?**
+
+`include_bytes_aligned!` reads from `OUT_DIR`. Something has to put the compiled BPF ELF there before the user-space build runs. There should be a `build.rs` in `xdp-firewall/` that does this, and/or the `xtask` crate handles it. Run:
+
+```bash
+cat ~/xdp-firewall/xdp-firewall/build.rs
+ls ~/xdp-firewall/xtask/src/main.rs
+```
+
+Tell me what you find. Understanding the build flow — BPF compiles first, ELF goes to a known path, user-space embeds it — is necessary before you run the first build. If you run `cargo build` without first building the BPF crate, it fails because the embedded file does not exist yet.
+
+**2. Where does `program_mut("xdp_firewall")` get the name from?**
+
+```rust
+let program: &mut Xdp = ebpf.program_mut("xdp_firewall").unwrap().try_into()?;
+```
+
+The string `"xdp_firewall"` is the name of the BPF program section in the ELF. Look at the eBPF program:
+
+```rust
+#[xdp]
+pub fn xdp_firewall(ctx: XdpContext) -> u32 { ... }
+```
+
+The `#[xdp]` macro annotates this function with a BPF ELF section named `xdp/xdp_firewall`. The user-space code looks for a program by that name in the loaded ELF. If you rename the function, you must update the `program_mut("...")` call. This is how the two sides are coupled — by string name, not by type.
+
+**3. What happens when the user-space process exits?**
+
+The program runs until Ctrl-C. When the process exits, what happens to the loaded XDP program? Think about this — is it still attached to the interface after the process dies? In Aya, when the `Ebpf` struct drops, it **detaches** the program. This is important for production use: if your control plane crashes, the firewall rule is automatically removed. For testing, this is convenient — Ctrl-C cleans up. For production, you would pin the program to the BPF filesystem (`/sys/fs/bpf`) to make it survive process death.
+
+---
+
+## Next Action
+
+Run these two reads:
+
+```bash
+cat ~/xdp-firewall/xdp-firewall-ebpf/.cargo/config.toml
+cat ~/xdp-firewall/xdp-firewall/build.rs
+```
+
+Share both. Then we do the first build — two commands in sequence — and verify the scaffold attaches and passes all packets before we touch any logic.
+
+Good catch — the template has changed. Newer Aya templates moved the BPF target configuration out of `.cargo/config.toml` and into a `build.rs`. That `build.rs` you found inside `xdp-firewall-ebpf/` is now the important file.
+
+Run these four reads:
+
+```bash
+cat ~/xdp-firewall/xdp-firewall-ebpf/build.rs
+cat ~/xdp-firewall/xdp-firewall-ebpf/Cargo.toml
+cat ~/xdp-firewall/xdp-firewall/build.rs
+cat ~/xdp-firewall/Cargo.toml
+```
+
+Share all four verbatim. Before I tell you what to look for — what do you think a `build.rs` inside the eBPF crate is responsible for? The BPF program needs to compile to a completely different target (`bpfel-unknown-none`) than the host. Something has to tell Cargo that. Where do you think that instruction lives now, if not in `.cargo/config.toml`?
+
+Think about it while those files print. Then share the output.
+
+Good. Now the full build architecture is visible. Let me walk you through what these files are actually doing, because the new Aya template works differently from what the documentation describes.
+
+---
+
+## The Build Flow — This Template Has No `xtask`
+
+The old Aya template required two separate commands:
+```bash
+cargo xtask build-ebpf   # compile BPF crate first
+cargo build              # then compile user-space
+```
+
+This template replaced that with `aya_build`. Look at `xdp-firewall/build.rs` — this is a **Cargo build script** for the user-space crate. When you run `cargo build`, Cargo runs this script first, before compiling user-space code:
+
+```
+cargo build (targets xdp-firewall user-space crate)
+    │
+    ├─ runs xdp-firewall/build.rs FIRST
+    │       └─ aya_build::build_ebpf([ebpf_package], Toolchain::default())
+    │               └─ compiles xdp-firewall-ebpf with target=bpfel-unknown-none
+    │               └─ output: $OUT_DIR/xdp-firewall  ← BPF ELF file
+    │
+    └─ compiles xdp-firewall/src/main.rs
+            └─ include_bytes_aligned!(OUT_DIR/xdp-firewall) embeds the ELF bytes
+```
+
+One command does both. The BPF crate is compiled as a build-time dependency of the user-space crate, not as a standalone workspace member.
+
+---
+
+## Three Critical Observations From `Cargo.toml`
+
+**Observation 1 — `default-members` excludes the eBPF crate**
+
+```toml
+default-members = ["xdp-firewall", "xdp-firewall-common"]
+```
+
+`xdp-firewall-ebpf` is listed in `members` (so Cargo knows it exists) but NOT in `default-members`. Ask yourself why. If you ran `cargo build` at the workspace root and it tried to compile `xdp-firewall-ebpf` as a normal workspace member targeting `x86_64-unknown-linux-gnu` — what would happen?
+
+The crate has `#![no_std]`. It has no `main`. Its entire existence assumes a BPF virtual machine. Compiling it for x86 would fail immediately. So it is excluded from `default-members`. It is only ever compiled through `aya_build` inside the user-space build script, which uses the correct BPF target. This is the architecture.
+
+**Observation 2 — All Aya dependencies are unpinned git HEAD**
+
+```toml
+aya = { git = "https://github.com/aya-rs/aya", default-features = false }
+aya-build = { git = "https://github.com/aya-rs/aya", default-features = false }
+```
+
+No version, no commit hash, no tag. You are pulling from the latest commit on the `main` branch at build time. This means two things practically: the first build fetches and compiles a large git repository (takes time), and a future build could silently pull in breaking changes. For production this is unacceptable — you would pin to a specific commit hash. For development and learning it is fine, but be aware that if a build breaks unexpectedly weeks from now, this is why.
+
+**Observation 3 — Release profile for the eBPF crate**
+
+```toml
+[profile.release.package.xdp-firewall-ebpf]
+debug = 2
+codegen-units = 1
+strip = false
+```
+
+Even in release mode, the BPF crate preserves full debug information and disables stripping. Why? BTF (BPF Type Format) — the debug info section in the ELF that enables CO-RE (Compile Once, Run Everywhere). Without it, type information is not embedded in the BPF ELF, and the kernel cannot relocate types across kernel versions. `codegen-units = 1` forces single-threaded codegen — necessary for the BPF backend to produce deterministic, correct output. These are not developer conveniences; they are correctness requirements for the BPF target.
+
+---
+
+## The eBPF `build.rs` — What It Actually Does
+
+```rust
+fn main() {
+    let bpf_linker = which("bpf-linker").unwrap();
+    println!("cargo:rerun-if-changed={}", bpf_linker.to_str().unwrap());
+}
+```
+
+This does nothing to the compilation. It purely tells Cargo: "if the `bpf-linker` binary on disk changes, rerun this build script." It is a cache invalidation hint. The actual BPF compilation is driven by `aya_build` in the user-space `build.rs`, not here.
+
+---
+
+## Build It Now
+
+You have everything you need. Run this:
+
+```bash
+cd ~/xdp-firewall
+cargo build 2>&1 | tee /tmp/build.log
+```
+
+Pipe to `tee` so you have the full log if it fails. The first build will be slow — it fetches aya from git and compiles it. Expect 3–10 minutes.
+
+While it compiles, look at the `[[bin]]` section in `xdp-firewall-ebpf/Cargo.toml`:
+
+```toml
+[[bin]]
+name = "xdp-firewall"
+```
+
+And look at the user-space load call:
+
+```rust
+ebpf.program_mut("xdp_firewall")   // underscore
+include_bytes_aligned!(..."/xdp-firewall")  // dash
+```
+
+One uses a dash, one uses an underscore. They refer to different things. The filename `xdp-firewall` is the BPF ELF binary name (set by `[[bin]]`). The string `"xdp_firewall"` is the BPF program section name inside the ELF — it comes from the Rust function name `fn xdp_firewall`. Think about what would happen if you renamed the function to `fn my_filter` but forgot to update `program_mut("xdp_firewall")`.
+
+Share the build output when done — either success or the first error. We verify the scaffold attaches to `enp2s0` and passes traffic before touching any logic.
