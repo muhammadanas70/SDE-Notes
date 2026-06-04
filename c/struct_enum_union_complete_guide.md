@@ -3419,3 +3419,170 @@ C union  →  C tagged union  →  Rust union  →  Rust enum
 8. **Go has no union, no algebraic enum** — it uses interfaces + type switches to achieve similar expressiveness, at the cost of heap allocation and runtime dispatch.
 9. **ABI stability** in the kernel means struct fields are never reordered and new fields go at the end only — public structs are a contract.
 10. **Pattern matching exhaustiveness** is the killer feature of Rust enums: adding a variant forces you to handle it everywhere — the compiler is your refactoring safety net.
+
+# Working with Structs in C, Go, and Rust
+
+I'm assuming you meant "how to **handle** structs" — here's a comparison of struct handling across these three languages:
+
+## C: Manual Everything
+
+```c
+// Definition
+struct Person {
+    char name[50];
+    int age;
+    float height;
+};
+
+// Stack allocation (automatic cleanup)
+struct Person p1 = {"Alice", 30, 5.8};
+
+// Heap allocation (manual cleanup required)
+struct Person *p2 = malloc(sizeof(struct Person));
+p2->name = "Bob";
+p2->age = 25;
+free(p2);  // Must manually free
+
+// Accessing members
+p1.age;    // Stack: use dot notation
+p2->age;   // Heap: use arrow notation
+
+// No methods - use functions instead
+void print_person(struct Person *p) {
+    printf("%s is %d years old\n", p->name, p->age);
+}
+```
+
+**Key points:**
+- You manage memory explicitly (malloc/free)
+- No methods — use functions with struct pointers
+- Copy semantics by default (can be expensive)
+- Zero abstraction overhead
+
+---
+
+## Go: Simplicity with Automatic Cleanup
+
+```go
+// Definition
+type Person struct {
+    Name   string
+    Age    int
+    Height float64
+}
+
+// Stack allocation (scope-based cleanup)
+p1 := Person{"Alice", 30, 5.8}
+
+// Pointers are optional (no null dereference safety)
+p2 := &Person{Name: "Bob", Age: 25}
+
+// Accessing members (automatic pointer dereferencing)
+p1.Age        // Works with value
+p2.Age        // Pointers auto-deref for fields
+p2.Name = "Charlie"
+
+// Methods attached to struct (receivers)
+func (p Person) PrintInfo() {
+    fmt.Printf("%s is %d years old\n", p.Name, p.Age)
+}
+
+// Pointer receiver for mutations
+func (p *Person) HaveBirthday() {
+    p.Age++
+}
+
+p1.PrintInfo()      // Works even though PrintInfo uses value receiver
+p2.HaveBirthday()   // Pointer receiver for mutation
+```
+
+**Key points:**
+- Automatic memory management (garbage collected)
+- Methods use receiver syntax `func (p Person) Method()`
+- Pointers optional — Go decides when needed
+- Simple, pragmatic design
+
+---
+
+## Rust: Safety + Control
+
+```rust
+// Definition
+struct Person {
+    name: String,
+    age: u32,
+    height: f64,
+}
+
+// Stack allocation (ownership-based cleanup)
+let p1 = Person {
+    name: String::from("Alice"),
+    age: 30,
+    height: 5.8,
+};
+
+// Mutable binding for mutations
+let mut p2 = Person {
+    name: String::from("Bob"),
+    age: 25,
+    height: 5.9,
+};
+
+p2.age = 26;  // Must be mutable
+
+// Borrowing (references without ownership transfer)
+fn print_info(person: &Person) {
+    println!("{} is {} years old", person.name, person.age);
+}
+
+// Mutable borrows for mutations
+fn have_birthday(person: &mut Person) {
+    person.age += 1;
+}
+
+print_info(&p1);
+have_birthday(&mut p2);
+
+// Methods using impl blocks
+impl Person {
+    // Takes ownership
+    fn into_name(self) -> String {
+        self.name
+    }
+    
+    // Borrows immutably
+    fn age(&self) -> u32 {
+        self.age
+    }
+    
+    // Borrows mutably
+    fn celebrate(&mut self) {
+        self.age += 1;
+    }
+}
+
+p2.celebrate();
+let name = p1.into_name();  // p1 is moved, can't use it again
+```
+
+**Key points:**
+- Automatic cleanup via ownership (stack-based RAII)
+- Must explicitly declare mutability
+- Borrowing prevents data races at compile-time
+- Methods specify how they access `self`
+- Heap allocations use `Box`, `Vec`, `String`, etc.
+
+---
+
+## Quick Comparison Table
+
+| Feature | C | Go | Rust |
+|---------|---|----|----|
+| Memory | Manual (malloc/free) | Automatic (GC) | Automatic (ownership) |
+| Safety | Unsafe | Safe (nil panics) | Safe (compile-time) |
+| Methods | No, use functions | Yes (receivers) | Yes (impl blocks) |
+| Pointers | Explicit & necessary | Optional | Explicit (borrowing) |
+| Mutability | Default mutable | Default mutable | Explicit `mut` |
+| Performance | Maximum | Good | Maximum (no GC) |
+
+Would you like me to dive deeper into any of these, like memory layout, heap allocation patterns, or method design?

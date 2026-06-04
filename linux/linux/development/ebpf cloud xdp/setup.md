@@ -1842,3 +1842,598 @@ include_bytes_aligned!(..."/xdp-firewall")  // dash
 One uses a dash, one uses an underscore. They refer to different things. The filename `xdp-firewall` is the BPF ELF binary name (set by `[[bin]]`). The string `"xdp_firewall"` is the BPF program section name inside the ELF — it comes from the Rust function name `fn xdp_firewall`. Think about what would happen if you renamed the function to `fn my_filter` but forgot to update `program_mut("xdp_firewall")`.
 
 Share the build output when done — either success or the first error. We verify the scaffold attaches to `enp2s0` and passes traffic before touching any logic.
+
+Good. The build succeeded. Let me work through this in order: the build output first, then the two reading tasks since you said you don't know — that is a gap we must close before writing any parser code.
+
+---
+
+## Build Output Analysis
+
+The scaffold compiled cleanly. Two profiles built:
+
+```
+Finished `release` profile [optimized] target(s) in 18.54s   ← eBPF program (bpf-linker)
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.88s  ← user-space
+```
+
+The warning:
+```
+unable to open LLVM shared lib libLLVM-22-rust-1.98.0-nightly.so: dlopen failed
+```
+
+This is **non-fatal and expected**. Your nightly toolchain was compiled against LLVM 22 and expects it as a shared library. It is not present as `.so` on your system. The build succeeded anyway because `bpf-linker` ships its own LLVM statically linked. The system LLVM is not required for `bpf-linker` to produce BPF ELF output. You can ignore this warning for now.
+
+**However**: note what this warning tells you architecturally. The eBPF crate is not compiled by `rustc` the normal way — `bpf-linker` takes the LLVM bitcode that `rustc` emits and links it into a BPF ELF object. That is why the toolchain and linker have a separate LLVM dependency chain. Keep that model in your head — it is different from normal Rust compilation.
+
+---
+
+## Reading Task 1: Byte Order and RFC 791
+
+You said you do not know. Let me build this from scratch — this is fundamental to every network program you will ever write.
+
+### What Endianness Actually Is
+
+A multi-byte integer like `0xC0A87A01` (four bytes) must be laid out in memory. There are two conventions:
+
+```
+Value: 0xC0A87A01
+
+Big-endian (most significant byte at lowest address):
+  address:   N     N+1   N+2   N+3
+  byte:     0xC0  0xA8  0x7A  0x01
+            ↑ MSB                LSB ↑
+
+Little-endian (least significant byte at lowest address):
+  address:   N     N+1   N+2   N+3
+  byte:     0x01  0x7A  0xA8  0xC0
+            ↑ LSB                MSB ↑
+```
+
+Your x86 CPU is **little-endian**. When it reads 4 bytes `[C0, A8, 7A, 01]` from memory as a `u32`, it assembles: `0x017AA8C0`. That is `24,951,488` — a meaningless integer. Not `192.168.122.1`.
+
+### Why Networking Uses Big-Endian
+
+RFC 791 Section 3.1 defines this explicitly. The standard is: **network byte order is big-endian**. All multi-byte fields in IP headers, TCP headers, UDP headers — every protocol header defined in an RFC — are big-endian on the wire.
+
+The reason is historical and practical: big-endian matches the way humans write numbers. `192.168.122.1` — the `192` is most significant. Big-endian puts the `0xC0` (= 192) byte first. Reading a wire capture as a human is natural.
+
+**Go read RFC 791 Section 3.1 now** — specifically the diagram labeled "Internet Header Format" and the note about octet ordering. This is five minutes. Come back after. The URL:
+```
+https://www.rfc-editor.org/rfc/rfc791#section-3.1
+```
+
+Find and tell me: which byte offsets does `Source Address` occupy in the IP header?
+
+### The Conversion Functions
+
+C (kernel code):
+```c
+ntohl(x)  /* network-to-host long:  big-endian → host order */
+htonl(x)  /* host-to-network long:  host order → big-endian */
+ntohs(x)  /* network-to-host short: 16-bit version */
+htons(x)  /* host-to-network short: 16-bit version */
+```
+
+On a big-endian machine these are no-ops. On little-endian (x86), they byte-swap. The abstraction is portable.
+
+Rust equivalent:
+```rust
+u32::from_be(x)   // big-endian bytes → host order (= ntohl)
+x.to_be()         // host order → big-endian bytes (= htonl)
+u16::from_be(x)   // = ntohs
+x.to_be() as u16  // = htons
+```
+
+### Applied to Your Map Key
+
+This is the decision that determines whether your firewall works at all:
+
+```
+Packet arrives on wire, IPv4 saddr field contains IP 192.168.122.1:
+Wire bytes at offset 12-15: [0xC0] [0xA8] [0x7A] [0x01]
+
+XDP program reads (*iph).saddr as u32 on x86:
+→ raw value = 0x017A_A8C0  (little-endian assembly of those bytes)
+
+User-space inserts key for "192.168.122.1":
+u32::from(Ipv4Addr::new(192, 168, 122, 1)) = 0xC0A8_7A01
+
+Map lookup: 0x017AA8C0 == 0xC0A87A01 ? NO. Never matches.
+```
+
+**The fix we use (Option A — keep network byte order in the map):**
+
+```rust
+// XDP program: use raw saddr — network byte order
+let key: u32 = unsafe { (*iph).saddr };
+// raw bytes in map key: [C0, A8, 7A, 01]
+
+// User-space before insert:
+let ip = Ipv4Addr::new(192, 168, 122, 1);
+let key: u32 = u32::from(ip).to_be();
+// u32::from(ip) on x86 = 0xC0A87A01, stored as [01, 7A, A8, C0]
+// .to_be() swaps to [C0, A8, 7A, 01]  ← matches XDP key ✓
+```
+
+**Invariant to memorize:**
+> BPF map keys hold IP addresses in network byte order. XDP reads raw. User-space always calls `.to_be()` before inserting an IP key.
+
+---
+
+## Reading Task 2: `__be32` — The Kernel's Type-Level Documentation
+
+Open this file on your guest:
+```bash
+grep -n "__be32\|__le32" /usr/src/linux-headers-$(uname -r)/include/uapi/linux/ip.h | head -20
+```
+
+You will see the `iphdr` struct uses `__be32` for `saddr` and `daddr`, not plain `u32`.
+
+### What `__be32` Means
+
+`__be32` is defined in `include/uapi/linux/types.h`:
+```c
+typedef __u32 __bitwise __be32;
+```
+
+It is **the same size as `u32`** — 32 bits. The difference is purely semantic, enforced by **sparse**, the Linux kernel's static analysis tool.
+
+`__bitwise` is a `sparse` annotation. Sparse tracks endianness through your code. If you assign a `__be32` (big-endian) to a plain `u32` (host order) without a conversion function, sparse emits a warning: `incorrect type in assignment (different base types)`. Plain `gcc` or `clang` ignores `__bitwise` — it is a zero-cost annotation at compile time, purely for analysis.
+
+### Why This Pattern Exists
+
+Consider this bug:
+
+```c
+struct iphdr *iph = /* ... */;
+u32 src = iph->saddr;          // sparse WARNS: big-endian value in host-order variable
+
+// vs:
+__be32 src_be = iph->saddr;    // OK: same type
+u32 src_host = ntohl(iph->saddr);  // OK: explicit conversion
+```
+
+The kernel networking subsystem uses `__be32`/`__le32`/`__be16` annotations throughout so that sparse can find byte-order bugs statically. A wrong `ntohl` call or a missing conversion will trigger a warning before any packet is processed.
+
+This is a type-system-as-documentation pattern. It does not change machine code. It makes the contract visible.
+
+In Aya/Rust, the equivalent is using `u32::from_be()` explicitly and noting in comments where values are in network order. Rust does not have sparse, but you enforce the same invariant through discipline and code review.
+
+**Takeaway for you:** When you read kernel networking source code and see `__be32`, read it as: *"this field is big-endian; do not use it as a host-order integer without ntohl."*
+
+---
+
+## Next Step: Verify the Scaffold Runs
+
+Before modifying any code, confirm the scaffold loads and attaches:
+
+```bash
+# Build it (already done)
+cargo xtask build-ebpf
+cargo build
+
+# Run it — requires root, attach to enp2s0
+sudo ./target/debug/xdp-firewall --iface enp2s0
+```
+
+In a second terminal, verify it loaded:
+```bash
+sudo bpftool prog list | grep xdp
+sudo bpftool net list dev enp2s0
+```
+
+You should see your XDP program attached to `enp2s0`. From the host, `ping 192.168.122.22` should still work — the scaffold passes all packets.
+
+**Then, once that baseline is confirmed:**
+```bash
+# Read these four files before touching anything
+cat xdp-firewall-ebpf/src/main.rs
+cat xdp-firewall/src/main.rs
+cat xdp-firewall-common/src/lib.rs
+cat xdp-firewall-ebpf/.cargo/config.toml
+```
+
+Share what you see in those files. Particularly: what does the scaffold XDP program currently do, and how does the user-space load and attach it? Reading this precisely is what tells us exactly what we are adding and where.
+
+Run the baseline verification first. Share the output from `bpftool prog list` and `bpftool net list dev enp2s0`. That confirms the toolchain is end-to-end functional before we write a single line of firewall logic.
+
+Classic orphaned console session. Happens when you close the terminal without properly exiting with `Ctrl+]`. Two things to fix this: immediate unblock and a workflow improvement so this stops being a friction point.
+
+---
+
+## Immediate Fix
+
+**Option 1 — Force disconnect and reconnect:**
+```bash
+virsh console linuxnet --force
+```
+This evicts the existing session and gives you the connection.
+
+**Option 2 — If `--force` is not supported on your libvirt version:**
+```bash
+# Find the orphaned process
+ps aux | grep "virsh console"
+
+# Kill it
+kill <pid>
+
+# Then reconnect
+virsh console linuxnet
+```
+
+**Option 3 — Check if you have another terminal open** with the session still active. `Ctrl+]` exits virsh console cleanly. If you close the terminal window without doing that, the session hangs.
+
+---
+
+## Root Cause
+
+virsh console maps to a single QEMU chardev (your `ttyS0` serial port). libvirt serializes access — only one consumer. When the terminal closed without `Ctrl+]`, libvirt did not receive the disconnect signal and kept the session open.
+
+---
+
+## Permanent Workflow Fix — Run `tmux` Inside the Guest
+
+Since you only ever get one console connection, make that one connection a multiplexer. Once you are inside the guest:
+
+```bash
+# First time — create a persistent session
+tmux new-session -s main
+
+# Next time you reconnect via virsh console
+tmux attach -t main
+```
+
+Now inside that one serial console you have multiple windows, split panes, and you can detach cleanly (`Ctrl+b d`) without losing work. The virsh console connection drops but tmux keeps everything running inside the guest.
+
+This is the correct operational model for your setup:
+
+```
+Host terminal
+    └── virsh console linuxnet
+            └── tmux session "main"
+                    ├── window 0: build / edit code
+                    ├── window 1: run XDP program (sudo)
+                    └── window 2: bpftool / diagnostics
+```
+
+You switch windows with `Ctrl+b 0`, `Ctrl+b 1`, `Ctrl+b 2`. When your build is compiling in window 0, you are watching `bpftool prog list` in window 2.
+
+Install it on the guest if not present:
+```bash
+sudo apt install tmux
+```
+
+---
+
+## The Exit Discipline
+
+When you need to leave the console:
+
+```
+Inside guest → tmux detach:  Ctrl+b d
+Then exit virsh console:      Ctrl+]
+```
+
+Do both in that order. The session survives in tmux, the virsh connection is cleanly released, and the next `virsh console linuxnet` picks up exactly where you left off with `tmux attach -t main`.
+
+This eliminates the orphaned session problem entirely. What does `--force` output?
+
+Good. The build succeeded. Let me work through everything systematically.
+
+---
+
+## Build Analysis
+
+**Status: ✅ Both profiles compiled clean.**
+
+The only warning worth understanding:
+
+```
+linker stderr: unable to open LLVM shared lib libLLVM-22-rust-1.98.0-nightly.so: dlopen failed
+```
+
+The nightly toolchain was compiled against LLVM 22 shared lib, which isn't installed. `bpf-linker` falls back to its own statically-linked LLVM — the compilation still succeeded. This is cosmetic. The `release` profile (eBPF bytecode) and `dev` profile (user-space binary) both finished. You have a working scaffold.
+
+---
+
+## The Two Concepts You Missed
+
+**RFC 791 / Byte Order:**
+
+RFC 791 Section 3.1 specifies that multi-byte fields in the IPv4 header are transmitted with the most significant octet first — this is network byte order (big-endian). Your x86 CPU is little-endian. So the 4-byte field `saddr` for `192.168.122.1` arrives as bytes `[C0, A8, 7A, 01]` on the wire. When your x86 CPU reads those 4 bytes as a `u32`, it assembles them LSB-first: `0x017A_A8C0` — which is a completely different integer from `0xC0A8_7A01`. Your map lookup silently fails if you don't account for this. The rule: **XDP reads packet fields raw; user-space calls `.to_be()` before inserting map keys.**
+
+**`__be32`:**
+
+The kernel uses `__be32` instead of `u32` for IP address fields. It's the same underlying 32-bit integer at runtime — no different code generated. It's documentation enforced by the `sparse` static analysis tool: if you assign a `__be32` to a plain `u32` without a cast, `sparse` warns. It tells you — and future readers — "this field is in big-endian; don't use it as-is on a little-endian host." In Rust+Aya you don't have `sparse`, so the discipline is manual: add comments everywhere byte order is relevant.
+
+---
+
+## Read the Scaffold First
+
+Before touching anything:
+
+```bash
+cd ~/xdp-firewall
+cat xdp-firewall-ebpf/src/main.rs
+cat xdp-firewall-ebpf/Cargo.toml
+cat xdp-firewall/src/main.rs
+cat xdp-firewall-common/src/lib.rs
+cat xdp-firewall/build.rs          # explains how eBPF binary gets embedded
+```
+
+Note how `build.rs` calls `aya_build::build()` — that's what compiled `xdp-firewall-ebpf` as a `release` build automatically during `cargo build`. The eBPF binary lands in `OUT_DIR` and gets embedded into the user-space binary via `include_bytes_aligned!`. You don't run `cargo xtask build-ebpf` separately anymore with the newer template.
+
+Share what you see in those five files. Then we replace their contents with what follows.
+
+---
+
+## v1 Firewall — Full Implementation
+
+### Step 1: `xdp-firewall-common/src/lib.rs`
+
+```rust
+#![no_std]
+
+/// Action constants stored as map values.
+/// Keep these as u32 — both eBPF and user-space read them without conversion.
+pub const ACTION_PASS: u32 = 0;
+pub const ACTION_DROP: u32 = 1;
+```
+
+### Step 2: `xdp-firewall-ebpf/Cargo.toml` — add dependencies
+
+```toml
+[dependencies]
+aya-ebpf = { git = "https://github.com/aya-rs/aya" }
+aya-log-ebpf = { git = "https://github.com/aya-rs/aya" }
+network_types = { version = "0.0.6", default-features = false }  # ← add this
+xdp-firewall-common = { path = "../xdp-firewall-common" }         # ← add this
+```
+
+`network_types` provides `EthHdr`, `Ipv4Hdr` etc. as `#[repr(C)]` Rust structs that map directly to wire format — cleaner than raw `aya_ebpf::bindings` C types.
+
+### Step 3: `xdp-firewall-ebpf/src/main.rs` — replace entirely
+
+```rust
+#![no_std]
+#![no_main]
+
+use core::mem;
+
+use aya_ebpf::{
+    bindings::xdp_action,
+    macros::{map, xdp},
+    maps::HashMap,
+    programs::XdpContext,
+};
+use aya_log_ebpf::info;
+use network_types::{
+    eth::{EthHdr, EtherType},
+    ip::Ipv4Hdr,
+};
+use xdp_firewall_common::{ACTION_DROP, ACTION_PASS};
+
+/// Blocklist map.
+/// Key:   u32 src_ip in NETWORK byte order (big-endian) — matches what the XDP
+///        program reads directly from the IPv4 header, no conversion needed.
+/// Value: u32 action constant (ACTION_DROP or ACTION_PASS).
+/// User-space MUST call .to_be() on IP addresses before inserting as keys.
+#[map]
+static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(1024, 0);
+
+#[xdp]
+pub fn xdp_firewall(ctx: XdpContext) -> u32 {
+    match try_xdp_firewall(ctx) {
+        Ok(ret) => ret,
+        // XDP_ABORTED: drop with a trace event — visible in bpftrace/perf
+        Err(_) => xdp_action::XDP_ABORTED,
+    }
+}
+
+fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, u32> {
+    // ── Step 1: Ethernet header ────────────────────────────────────────────
+    // ptr_at verifies: data + offset + sizeof(EthHdr) <= data_end
+    // The BPF verifier requires this check on every pointer before use.
+    let eth_hdr: *const EthHdr = ptr_at(&ctx, 0)?;
+
+    // Only process IPv4. Pass everything else (ARP, IPv6, VLAN, etc.).
+    match unsafe { (*eth_hdr).ether_type } {
+        EtherType::Ipv4 => {}
+        _ => return Ok(xdp_action::XDP_PASS),
+    }
+
+    // ── Step 2: IPv4 header ────────────────────────────────────────────────
+    let ip_hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
+
+    // saddr is at fixed bytes 12–15 of the IPv4 header (RFC 791, §3.1).
+    // Its position does not change regardless of ihl — safe to read here for v1.
+    //
+    // v1 policy: we do not check ihl. Port matching (v2) must use ihl*4 for
+    // TCP header offset — hardcoding +20 is wrong when IP options are present.
+    // That bug is invisible to the BPF verifier; it's a semantic error.
+    let src_ip: u32 = unsafe { (*ip_hdr).src_addr };
+    // src_ip is now in network byte order — same bytes as the map key. No conversion needed.
+
+    // ── Step 3: Blocklist lookup ───────────────────────────────────────────
+    let action = unsafe { BLOCKLIST.get(&src_ip) }.copied().unwrap_or(ACTION_PASS);
+
+    if action == ACTION_DROP {
+        // {:i} in aya_log displays a u32 as dotted IPv4 (expects network byte order)
+        info!(&ctx, "DROP src={:i}", src_ip);
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    Ok(xdp_action::XDP_PASS)
+}
+
+/// Returns a raw pointer to a `T` at `offset` bytes from the start of the packet.
+///
+/// This bounds check is MANDATORY. The BPF verifier tracks that (start + offset + len)
+/// was compared against data_end. Without this, the verifier rejects the program.
+/// Correctness guarantee: if this returns Ok, reading sizeof(T) bytes at the pointer
+/// is safe — the verifier has verified it.
+#[inline(always)]
+fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, u32> {
+    let start = ctx.data();
+    let end = ctx.data_end();
+    let len = mem::size_of::<T>();
+
+    if start + offset + len > end {
+        return Err(xdp_action::XDP_PASS); // short packet — pass silently
+    }
+
+    Ok((start + offset) as *const T)
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    unsafe { core::hint::unreachable_unchecked() }
+}
+```
+
+### Step 4: `xdp-firewall/Cargo.toml` — add common dep
+
+```toml
+[dependencies]
+# ... existing deps (aya, aya-log, clap, tokio, anyhow, env_logger, log) ...
+xdp-firewall-common = { path = "../xdp-firewall-common" }
+```
+
+### Step 5: `xdp-firewall/src/main.rs` — replace entirely
+
+```rust
+use std::net::Ipv4Addr;
+
+use anyhow::Context;
+use aya::{
+    maps::HashMap,
+    programs::{Xdp, XdpFlags},
+};
+use aya_log::EbpfLogger;
+use clap::Parser;
+use log::{info, warn};
+use tokio::signal;
+use xdp_firewall_common::ACTION_DROP;
+
+#[derive(Debug, Parser)]
+struct Opt {
+    /// Network interface to attach to
+    #[clap(short, long, default_value = "enp2s0")]
+    iface: String,
+
+    /// Source IPs to block (comma-separated). Example: --block 192.168.122.1,10.0.0.5
+    #[clap(short, long, value_delimiter = ',')]
+    block: Vec<Ipv4Addr>,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let opt = Opt::parse();
+    env_logger::init();
+
+    // Load the eBPF binary embedded at compile time by build.rs via aya-build.
+    // OUT_DIR is set by Cargo; aya-build places the compiled eBPF ELF there.
+    let mut bpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
+        env!("OUT_DIR"),
+        "/xdp-firewall"
+    )))?;
+
+    // Wire up eBPF log events (info!/warn! in the XDP program) to the host logger.
+    if let Err(e) = EbpfLogger::init(&mut bpf) {
+        warn!("eBPF logger unavailable: {e}");
+    }
+
+    // Load and attach the XDP program.
+    // XdpFlags::default() tries native mode first, falls back to generic.
+    // On virtio-net with kernel 7.x, native XDP is available.
+    let program: &mut Xdp = bpf
+        .program_mut("xdp_firewall")
+        .context("BPF program 'xdp_firewall' not found — name must match #[xdp] fn name")?
+        .try_into()?;
+    program.load()?;
+    program
+        .attach(&opt.iface, XdpFlags::default())
+        .with_context(|| format!("failed to attach XDP to {}", opt.iface))?;
+
+    info!("XDP firewall attached to {}", opt.iface);
+
+    // Populate the BLOCKLIST map.
+    // CRITICAL: keys must be in network byte order (big-endian) to match what the
+    // XDP program reads from iph->src_addr without conversion.
+    let mut blocklist: HashMap<_, u32, u32> = HashMap::try_from(
+        bpf.map_mut("BLOCKLIST")
+            .context("BLOCKLIST map not found — name must match #[map] static name")?,
+    )?;
+
+    for ip in &opt.block {
+        // u32::from(Ipv4Addr) gives host byte order (0xC0A87A01 for 192.168.122.1)
+        // .to_be() converts to network byte order on LE host ([C0,A8,7A,01])
+        // This matches the raw saddr bytes the XDP program reads from the packet.
+        let key: u32 = u32::from(*ip).to_be();
+        blocklist.insert(key, ACTION_DROP, 0)?;
+        info!("Rule added: DROP src={}", ip);
+    }
+
+    if opt.block.is_empty() {
+        warn!("No --block rules. Firewall passes all traffic.");
+    }
+
+    info!("Running. Ctrl-C to detach.");
+    signal::ctrl_c().await?;
+    info!("Exiting — XDP program will detach automatically.");
+
+    Ok(())
+}
+```
+
+---
+
+## Build
+
+```bash
+cd ~/xdp-firewall
+
+# Build everything (build.rs compiles eBPF automatically)
+cargo build 2>&1 | tee build.log
+
+# If network_types not found:
+# Check that xdp-firewall-ebpf/Cargo.toml has the network_types dep, then retry.
+```
+
+Share `build.log` verbatim if it fails.
+
+---
+
+## Test Procedure — The Acceptance Criteria We Defined
+
+```bash
+# Terminal 1 (guest): baseline — ping from host must succeed before we start
+# (do this from the HOST, 192.168.122.1):
+#   ping 192.168.122.22
+
+# Terminal 2 (guest): run the firewall
+sudo RUST_LOG=info ./target/debug/xdp-firewall \
+  --iface enp2s0 \
+  --block 192.168.122.1
+
+# From host: ping must now FAIL
+#   ping 192.168.122.22   ← expected: no reply
+
+# From guest: outbound ping must still work (XDP is ingress only)
+ping 192.168.122.1        # ← expected: replies arrive
+
+# Verify the XDP program is attached
+sudo bpftool prog list | grep xdp_firewall
+
+# Inspect the map contents
+sudo bpftool map show pinned /sys/fs/bpf/xdp_firewall/BLOCKLIST 2>/dev/null || \
+  sudo bpftool map list   # find the BLOCKLIST map by name, then:
+# sudo bpftool map dump id <ID>
+# Expected: key = c0 a8 7a 01 (192.168.122.1 in NBO), value = 01 00 00 00 (ACTION_DROP)
+
+# Ctrl-C the firewall — ping from host must succeed again
+```
+
+The `bpftool map dump` hex key `c0 a8 7a 01` is the definitive proof that byte order is correct — it should read as the literal IP octets `192.168.122.1`.
+
+Build it, share the output.
