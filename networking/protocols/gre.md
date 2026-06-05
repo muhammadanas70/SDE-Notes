@@ -28,6 +28,146 @@
 
 ---
 
+Sure. Think of GRE as inserting a GRE header between an outer IP header and the original packet.
+
+### Normal IP Packet
+
+```text
++------------------+
+| Ethernet Header  |  Layer 2
++------------------+
+| IP Header        |  Layer 3
++------------------+
+| TCP Header       |  Layer 4
++------------------+
+| HTTP Data        |  Layer 7
++------------------+
+```
+
+---
+
+### GRE Tunnel
+
+Suppose Host A wants to send a packet through a GRE tunnel to Host B.
+
+#### Original Packet
+
+```text
++------------------+
+| Original IP Hdr  | 192.168.1.10 -> 192.168.2.20
++------------------+
+| TCP Header       |
++------------------+
+| Application Data |
++------------------+
+```
+
+GRE encapsulates the ENTIRE packet:
+
+```text
++------------------+
+| Outer IP Header  | 10.0.0.1 -> 10.0.0.2
++------------------+
+| GRE Header       |
++------------------+
+| Original IP Hdr  | 192.168.1.10 -> 192.168.2.20
++------------------+
+| TCP Header       |
++------------------+
+| Application Data |
++------------------+
+```
+
+Then Ethernet is added for transmission:
+
+```text
++------------------+
+| Ethernet Header  |
++------------------+
+| Outer IP Header  |
++------------------+
+| GRE Header       |
++------------------+
+| Original IP Hdr  |
++------------------+
+| TCP Header       |
++------------------+
+| Application Data |
++------------------+
+```
+
+---
+
+### OSI View
+
+```text
+Host A                                    Host B
+======                                    ======
+
+Application ----------------------------> Application
+TCP ------------------------------------> TCP
+IP  (original packet) ------------------> IP
+
+             Encapsulated inside
+
+IP (outer tunnel) ----------------------> IP (outer tunnel)
+GRE ------------------------------------> GRE
+Ethernet -------------------------------> Ethernet
+```
+
+Or more compactly:
+
+```text
+L7  Application
+L4  TCP/UDP
+L3  Original IP
+    -----------------
+    GRE Header
+L3  Outer IP
+L2  Ethernet
+L1  Physical
+```
+
+This is why GRE is generally considered a **Layer 3 tunneling protocol**:
+
+```text
+IP
+ └── GRE
+      └── IP
+           └── TCP
+                └── Application Data
+```
+
+A packet capture (tcpdump/Wireshark) typically shows:
+
+```text
+Ethernet
+  IP (10.0.0.1 -> 10.0.0.2)
+    GRE
+      IP (192.168.1.10 -> 192.168.2.20)
+        TCP
+          HTTP
+```
+
+So GRE's job is essentially:
+
+```text
+Take a packet
+     ↓
+Wrap it with GRE
+     ↓
+Wrap it with another IP header
+     ↓
+Send it across the network
+     ↓
+Remote GRE endpoint removes the wrappers
+     ↓
+Original packet continues normally
+```
+
+That's why GRE is often described as **"IP-over-IP tunneling with a GRE shim header in between."**
+
+
 ## 1. What is GRE? — The Mental Model
 
 ### The Envelope Analogy

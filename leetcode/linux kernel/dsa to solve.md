@@ -965,13 +965,3 @@ If your long-term goal is **Linux networking, kernel, eBPF, XDP, cloud networkin
 **RBTree > Hash Table > Trie > Radix Tree > XArray > Maple Tree > Ring Buffer > RCU > Buddy Allocator > Slab Allocator > Graph Algorithms > Dynamic Programming.**
 
 That order is much closer to what you'll encounter in real kernel subsystems than the typical interview-focused DSA roadmap.
-
-[1]: https://docs.kernel.org/core-api/rbtree.html?utm_source=chatgpt.com "Red-black Trees (rbtree) in Linux — The Linux Kernel documentation"
-[2]: https://www.chiark.greenend.org.uk/doc/linux-doc/html/core-api/xarray.html?utm_source=chatgpt.com "XArray — The Linux Kernel documentation"
-[3]: https://www.kernel.org/doc/html/v6.7/core-api/maple_tree.html?utm_source=chatgpt.com "Maple Tree — The Linux Kernel documentation"
-
-[1]: https://docs.kernel.org/core-api/rbtree.html?utm_source=chatgpt.com "Red-black Trees (rbtree) in Linux — The Linux Kernel documentation"
-[2]: https://www.kernel.org/doc/html/v6.8/core-api/xarray.html?utm_source=chatgpt.com "XArray — The Linux Kernel documentation"
-[3]: https://kernel.org/doc/html/v6.0/filesystems/ext4/index.html?utm_source=chatgpt.com "ext4 Data Structures and Algorithms — The Linux Kernel documentation"
-[4]: https://www.kernel.org/doc/html/v6.7/core-api/maple_tree.html?utm_source=chatgpt.com "Maple Tree — The Linux Kernel documentation"
-[5]: https://arxiv.org/abs/1610.03052?utm_source=chatgpt.com "Verification of the Tree-Based Hierarchical Read-Copy Update in the Linux Kernel"
