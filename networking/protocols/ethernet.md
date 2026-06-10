@@ -122,7 +122,7 @@ OSI Layer        Name              Ethernet Component
 ---------        ----              ------------------
 Layer 7          Application       HTTP, FTP, SSH, DNS
 Layer 6          Presentation      TLS/SSL, encoding
-Layer 5          Session           TCP sessions, RPC
+Layer 5          Session           RPC
 Layer 4          Transport         TCP, UDP (port numbers)
 Layer 3          Network           IP (IPv4/IPv6) - routing
 Layer 2          Data Link         Ethernet MAC, Framing ← PRIMARY
