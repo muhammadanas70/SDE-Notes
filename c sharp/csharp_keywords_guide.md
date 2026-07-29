@@ -968,3 +968,97 @@ Every keyword choice here is deliberate, not decorative:
 2. **Map every C# keyword to something you already know from C/Rust/kernel work.** You've done half of this document already by seeing the analogies (`struct` ↔ value type, `unsafe`/`fixed` ↔ pinning, `async`/`await` ↔ epoll+continuation, `sealed` ↔ devirtualization, `record` ↔ value semantics you'd hand-roll with `Eq`/`Hash` derives in Rust). Building the *mapping* is faster and stickier than memorizing C# in isolation.
 3. **Write the 5 keywords that are least like anything in C/Rust from memory tomorrow, no reference:** `dynamic`, `yield return`, `event`, `in`/`out` variance on generics, `checked`/`unchecked`. These are the ones with no close analogue in your existing mental toolbox, so they're where forgetting will happen first.
 4. **Build a second version of the rate-limiter example yourself** using a different keyword each time to intentionally break something (remove `sealed`, remove `lock`, change `volatile` to a plain field) and reason through *exactly* what class of bug you introduced. That's how you turn "I read what `volatile` does" into "I can debug a missing `volatile` in someone else's code at 2am."
+
+---
+
+That question sits right at the hinge of the doc — it's the last line of Section 0, immediately after the bucket diagram, and it's not a throwaway: Section 16 restates it almost verbatim as the literal study method for all ~700 lines that follow. So this one sentence is the compression function for the whole guide — it's what lets you stop memorizing 100+ discrete keyword facts and start running one repeatable test on anything new.
+
+**"Which bucket" — the chunking half**
+
+The 8 (the diagram actually draws 9 labeled groups — TYPE DECLARE, ACCESS/MODIFIER, CONTROL FLOW, DATA/MEMORY, META/OPERATOR, ASYNC/ITERATOR, GENERICS, LINQ QUERY, NAMESPACE/MODULE — against the "8" the prose claims, worth a fix if you tighten this later) buckets aren't decoration, they're a prediction shortcut. Once you know a keyword lives in DATA/MEMORY, you already know — before reading its specific definition — that the question it's answering is *how do bytes move* (copy vs. alias, stack vs. heap). Once you know something's in ASYNC/ITERATOR, you know it's about *compiler-rewritten control flow*, not simple sequential execution. The bucket narrows the hypothesis space so the specific keyword definition just fills in details you were already expecting.
+
+**"Compiler-level or runtime-level" — the erasure test**
+
+This is the sharper half, and the doc gives you an operational way to answer it: *if you deleted this keyword and decompiled the IL, would anything differ?*
+
+- **Pure compile-time** (IL is identical, or the keyword never survives past the front-end): `const` is the doc's own flagship case — literal substitution at each call site, which is *why* the cross-assembly staleness bug exists at all. `var` is even more explicit — the doc states outright that the emitted IL is byte-identical to spelling out the type. `nameof` becomes a plain string literal. These aren't runtime mechanisms; they're the compiler protecting you from a mistake, then getting out of the way entirely.
+- **Pure runtime** (the IL, memory layout, or scheduling genuinely changes): `volatile` inserts real acquire/release fences the JIT respects. `virtual`/`override` compile to an actual vtable dispatch resolved against the object's real type at the call site — which is exactly why the `new`-hiding footgun exists (static type decides which slot gets called). `async`/`await`/`yield return` literally rewrite your method into a different, heap-allocated state-machine class — not a faster path through the same code. `stackalloc`/`fixed`/`unsafe` involve real stack memory and real GC-pinning behavior. Boxing silently triggers a real heap allocation. The cleanest falsifiable example: `checked` vs `unchecked` compiles to genuinely different IL opcodes (`add.ovf` vs plain `add`) — you can watch the instruction change, not just the compiler's opinion of your code.
+
+**The interesting middle case — where the question gets its teeth**
+
+The sophisticated part isn't "which side of the line," it's that some keywords are compile-time rules whose entire purpose is to *buy* a runtime property. `readonly struct` is a compile-time immutability proof, but its payoff is that the compiler can skip a defensive copy when you pass it by `in` — a real perf difference in generated code. `sealed` is a compile-time ban on subclassing, but the reason it's worth doing on a hot path is that the JIT can devirtualize the call — skip the vtable lookup entirely. `where T : unmanaged` is a compile-time proof about T's layout, but it exists solely to unlock genuinely low-level runtime operations (`stackalloc T[]`, pinning, pointer reinterpretation) that would be unsound to allow without that proof. Section 16's phrasing — "what runtime behavior, **if any**" — is doing exactly this work: acknowledging some keywords stop at (a), but the ones worth lingering on are the ones where (a) exists specifically to purchase (b).
+
+**Why the doc calls this "the whole skill"**
+
+Because it turns an open-ended memorization problem into a bounded, reusable classification — bucket × (compile-time / runtime / compile-time-that-buys-runtime) — that still works on a keyword this guide never covers, or on a future C# version. And it's explicitly the fix for the failure mode named in Section 16: confusing "the compiler enforced this and then it's gone" with "this is a load-bearing runtime mechanism" is called out as the #1 source of C# surprises for someone with your background — e.g., assuming `readonly` deep-freezes an object (it only freezes the field's assignability, not the referent's internals), or assuming `async` spins up a thread (it doesn't — it's a state machine plus a scheduler handoff).
+
+It's the same shape of question you already run reflexively in eBPF work — what gets proven once, before the thing is ever attached, versus what actually happens once packets are hitting the hook. This doc is just asking you to run that same load-time/run-time split on a language's keyword surface instead of a verifier.
+
+If it's useful, I can build out a compact bucket × compile-time/runtime reference table (all 9 groups) as an appendix you could drop straight into that file.
+
+Turn the "which bucket, compile-time or runtime" question into something you actually run, step by step, and it looks like this:
+
+```
+                        new keyword
+                             │
+                             ▼
+        ┌───────────────────────────────────────┐
+        │ 1. WHERE does it sit syntactically?     │
+        └───────────────────┬───────────────────┘
+     ┌───────────┬───────────┼───────────┬───────────┐
+     ▼           ▼           ▼           ▼           ▼
+ before a     on a       inside an   governs a   after `where`
+ type/member  parameter  expression  jump or     on a type
+ declaration                        branch       param
+     │           │           │           │           │
+     ▼           ▼           ▼           ▼           ▼
+ TYPE DECLARE DATA/       META/       CONTROL     GENERICS
+ or ACCESS/   MEMORY      OPERATOR    FLOW
+ MODIFIER
+                             │
+                             ▼
+        ┌───────────────────────────────────────┐
+        │ 2. ERASURE TEST — delete it, decompile  │
+        │    the IL. Does anything differ?         │
+        └───────────────────┬───────────────────┘
+                 ┌───────────┴───────────┐
+                 ▼                       ▼
+                NO                      YES
+                 │                       │
+        compile-time-only        runtime-level:
+        (guards a mistake,       real memory/thread/
+        then vanishes)           dispatch/allocation
+                 │               changed
+                 └───────────┬───────────┘
+                             ▼
+        ┌───────────────────────────────────────┐
+        │ 3. Even on "NO" — does this compile-time │
+        │    proof exist ONLY to buy back a         │
+        │    runtime cost/capability?               │
+        └───────────────────┬───────────────────┘
+                             ▼
+        ┌───────────────────────────────────────┐
+        │ 4. Anchor it — what C/Rust/kernel thing    │
+        │    is this standing in for?                │
+        └───────────────────────────────────────┘
+```
+
+**Filling in what the diagram can't show:** if the keyword sits next to `async` in a method signature or inside a `yield`-using body → ASYNC/ITERATOR. If it's inside a query expression or a `.Method()` chain over a collection → LINQ QUERY. If it's organizing files/types up top → NAMESPACE/MODULE. And one honest caveat: step 1 isn't airtight — `is` genuinely straddles META/OPERATOR (a simple type check) and CONTROL FLOW's pattern-matching corner (`is { Protocol: ..., Flags: ... }`), depending on whether you're doing a type test or a full destructure. The buckets are a strong prior, not a partition.
+
+**Proof it generalizes — two keywords the guide *lists* (§13) but never walks through:**
+
+`params` — public void Log(params object[] args)
+1. Sits on a parameter → DATA/MEMORY.
+2. Erasure test: for a call site already passing an array, no difference. For the loose-argument form (`Log("x", 1, true)`), the compiler emits an actual `newarr` + element stores at that call site — real IL, real heap allocation, every call.
+3. This is the inverse of the usual hybrid case: instead of a compile-time proof *removing* a runtime cost, the compile-time convenience is *hiding* one. Same family of gotcha as boxing — invisible in the syntax.
+4. Anchor: looks like C variadics (`printf(fmt, ...)`), but C's varargs read off the stack/register save area with zero extra allocation. `params` is a worse cost model than that anchor suggests — a real false friend if you're mapping from C.
+
+`scoped` — scoped ref int x, or on a `ref struct` parameter
+1. Sits on a `ref` local/parameter → DATA/MEMORY, same family as `ref`/`in`/`out`, refining how far an alias is allowed to travel.
+2. Erasure test: 100% compile-time. It's pure ref-safety/escape analysis — no runtime representation anywhere, no flag, nothing in IL.
+3. N/A — this one really does stop at (a). Nothing to buy back; the whole point is preventing a dangling-reference bug before you ever reach a binary.
+4. Anchor: this is C#'s closest thing to a Rust lifetime annotation (`'a`) — same job, prove no escape, entirely at compile time.
+
+**When to actually run this consciously, vs. let it go automatic:** the first 20-30 times, run all four steps deliberately — that's what makes the buckets start feeling like shapes instead of a list. After that, you pull it out consciously for three specific triggers: a keyword outside this guide's ~100, code behaving differently than you assumed (that's almost always a mis-classified compile-time-vs-runtime call, like the `readonly`-doesn't-deep-freeze mistake), or when you're hunting a hidden allocation in a hot path — which is exactly where step 2/3 earns its keep, since that's the `params` bug in a nutshell.
+
+This four-step version is basically the missing "how do I run this" companion to your doc's Section 16 (which has the retention tips but not the applied procedure) — happy to draft it as an addition if you want it sitting in the file itself.
