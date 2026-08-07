@@ -13,3 +13,7 @@ version = "0.1.0"
 [[package]]
 name = "print_in_order_1114"
 version = "0.1.0"
+
+[[package]]
+name = "unique_binary_search_trees_96"
+version = "0.1.0"
