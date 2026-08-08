@@ -1,4 +1,4 @@
-Here's a complete guide to setting up and using **GoNB** on Ubuntu Linux with VSCode.
+Here's a complete guide to setting up and using **GoNB** on Ubuntu Linux with VSCode, Windows 11 with VSCode.
 
 ---
 
@@ -431,3 +431,95 @@ source ~/Documents/venv/bin/activate && jupyter lab
 ```
 
 Or use the alias from earlier: `jlab`
+
+---
+
+Here's the Windows equivalent of that GoNB + Jupyter + VSCode setup:
+
+## Step 1 — Install Go
+
+Download and run the installer from [go.dev/dl](https://go.dev/dl/) (pick the `.msi`), or via `winget`:
+
+```powershell
+winget install GoLang.Go
+```
+
+Verify (open a **new** PowerShell so PATH refreshes):
+```powershell
+go version
+```
+
+## Step 2 — Install Python + Jupyter
+
+Install Python from [python.org](https://python.org) or `winget install Python.Python.3.12`, then:
+
+```powershell
+python -m venv $HOME\venv
+$HOME\venv\Scripts\activate
+pip install jupyterlab notebook
+```
+
+(Same venv-isolation reasoning as the Linux guide — keeps it out of your system Python.)
+
+## Step 3 — Install GoNB + tools
+
+```powershell
+go install github.com/janpfeifer/gonb@latest
+go install golang.org/x/tools/cmd/goimports@latest
+go install golang.org/x/tools/gopls@latest
+```
+
+## Step 4 — Add GOBIN to PATH
+
+`go install` puts binaries in `%USERPROFILE%\go\bin` on Windows. Add it permanently:
+
+```powershell
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";$env:USERPROFILE\go\bin", "User")
+```
+
+Close and reopen your terminal, then verify:
+```powershell
+where goimports
+```
+
+## Step 5 — Register the GoNB kernel
+
+```powershell
+gonb --install
+```
+
+## Step 6 — VSCode setup
+
+1. Install the **Jupyter** extension (Microsoft) in VSCode.
+2. Open/create a `.ipynb` file → click kernel selector (top-right) → **Jupyter Kernel...** → **Go (gonb)**.
+
+## The Windows-specific gotcha
+
+Same root cause as Linux: **VSCode's Jupyter kernel doesn't inherit your interactive shell's PATH updates** in some launch contexts (especially if VSCode was already running when you set the PATH). Fix it explicitly in `settings.json`:
+
+```json
+{
+  "terminal.integrated.env.windows": {
+    "PATH": "${env:PATH};${env:USERPROFILE}\\go\\bin"
+  }
+}
+```
+
+Then fully restart VSCode (not just reload window) so it picks up the new PATH, and restart the kernel (`Ctrl+Shift+P` → "Jupyter: Restart Kernel").
+
+## Key differences from the Ubuntu version
+
+| Linux | Windows |
+|---|---|
+| `~/go/bin` | `%USERPROFILE%\go\bin` |
+| `~/.bashrc` export | `[Environment]::SetEnvironmentVariable(...)` or System Properties → Environment Variables |
+| `sudo ln -s ... /usr/local/bin` | No real equivalent — just make sure PATH is set at the **User** or **System** level, not just inside one terminal session |
+| `terminal.integrated.env.linux` | `terminal.integrated.env.windows` |
+| `source venv/bin/activate` | `venv\Scripts\activate` |
+
+One more Windows-only wrinkle: if you're running PowerShell with an execution policy restriction, `venv\Scripts\Activate.ps1` may get blocked. If so:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
