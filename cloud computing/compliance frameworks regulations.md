@@ -30,15 +30,15 @@ The document covers 40 Q&A scenarios for beginner cloud security engineers acros
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                    CLOUD INFRASTRUCTURE                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │   AWS    │  │  Azure   │  │   GCP    │  │ On-Prem  │      │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘      │
+│                    CLOUD INFRASTRUCTURE                        │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │   AWS    │  │  Azure   │  │   GCP    │  │ On-Prem  │        │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘        │
 │       │             │             │             │              │
 │       └─────────────┴─────────────┴─────────────┘              │
-│                         │                                       │
-├─────────────────────────┼───────────────────────────────────────┤
-│         SECURITY CONTROL PLANE (Zero Trust)                     │
+│                         │                                      │
+├─────────────────────────┼──────────────────────────────────────┤
+│         SECURITY CONTROL PLANE (Zero Trust)                    │
 │  ┌──────────────────────┴──────────────────────┐               │
 │  │  Identity & Access (IAM/RBAC/MFA)           │               │
 │  │  Encryption (KMS, TLS, at-rest/in-transit)  │               │
@@ -47,9 +47,9 @@ The document covers 40 Q&A scenarios for beginner cloud security engineers acros
 │  │  Secrets Management (Vault, KMS)            │               │
 │  │  Vulnerability Management (Scanners, SBOM)  │               │
 │  └─────────────────┬───────────────────────────┘               │
-│                    │                                            │
-├────────────────────┼────────────────────────────────────────────┤
-│         COMPLIANCE MAPPING LAYER                                │
+│                    │                                           │
+├────────────────────┼───────────────────────────────────────────┤
+│         COMPLIANCE MAPPING LAYER                               │
 │  ┌─────────────────┴─────────────────────────────────┐         │
 │  │  PCI DSS → Network segmentation, encryption, logs │         │
 │  │  GDPR → Data residency, consent, right to delete  │         │
@@ -58,9 +58,9 @@ The document covers 40 Q&A scenarios for beginner cloud security engineers acros
 │  │  CMMC → CUI protection, access control, audits    │         │
 │  │  ... (map all 16 frameworks to controls)          │         │
 │  └───────────────────────────────────────────────────┘         │
-│                    │                                            │
-├────────────────────┼────────────────────────────────────────────┤
-│         AUDIT & ATTESTATION LAYER                               │
+│                    │                                           │
+├────────────────────┼───────────────────────────────────────────┤
+│         AUDIT & ATTESTATION LAYER                              │
 │  ┌─────────────────┴─────────────────────────────────┐         │
 │  │  Evidence Collection (Logs, Config Snapshots)     │         │
 │  │  Automated Compliance Checks (OPA, Cloud Policies)│         │

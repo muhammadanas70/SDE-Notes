@@ -872,3 +872,94 @@ I'll create a comprehensive guide to DFS trees covering all essential concepts, 
 - Both recursive and iterative approaches
 
 The guide includes complexity analysis (O(V + E) time), practice problems, and further reading suggestions. Each concept is illustrated with clear ASCII diagrams to help you visualize how DFS trees work in different scenarios!
+
+In **BFS (Breadth-First Search)**, we use a **Queue**, not a stack.
+
+### Why?
+
+BFS explores nodes **level by level**:
+
+```text
+        A
+       / \
+      B   C
+     / \   \
+    D   E   F
+```
+
+BFS order:
+
+```text
+A → B → C → D → E → F
+```
+
+We use a **FIFO queue**:
+
+```text
+FIFO = First In, First Out
+
+Queue:
+┌───┬───┬───┬───┐
+│ B │ C │ D │ E │
+└───┴───┴───┴───┘
+  ↑           ↑
+ front       back
+ dequeue     enqueue
+```
+
+### BFS pseudocode
+
+```text
+queue.push(start)
+
+while queue is not empty:
+    node = queue.pop_front()
+
+    for each neighbor of node:
+        queue.push_back(neighbor)
+```
+
+### BFS vs DFS
+
+| Algorithm | Data structure        | Strategy               |
+| --------- | --------------------- | ---------------------- |
+| **BFS**   | **Queue**             | Level by level         |
+| **DFS**   | **Stack** / recursion | Go as deep as possible |
+
+A useful mental model:
+
+```text
+BFS → Queue → FIFO → Level by level
+DFS → Stack → LIFO → Go deep
+```
+
+For graphs, BFS commonly uses:
+
+```text
+Queue + Visited Set
+```
+
+For example, in Rust:
+
+```rust
+use std::collections::{HashSet, VecDeque};
+
+let mut queue = VecDeque::new();
+let mut visited = HashSet::new();
+
+queue.push_back(start);
+visited.insert(start);
+
+while let Some(node) = queue.pop_front() {
+    // process node
+
+    for neighbor in neighbors(node) {
+        if !visited.contains(&neighbor) {
+            visited.insert(neighbor);
+            queue.push_back(neighbor);
+        }
+    }
+}
+```
+
+**Key point:** `VecDeque` is commonly used because BFS repeatedly **pushes at the back and removes from the front**.

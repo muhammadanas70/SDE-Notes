@@ -1595,6 +1595,7 @@ The diagram uses visual elements like:
 
 This visualization clearly demonstrates why Dynamic Programming is so powerful - it transforms exponential time algorithms into linear ones by avoiding redundant work through intelligent caching or table-building strategies.
 
+```
 DYNAMIC PROGRAMMING: STEP-BY-STEP VISUALIZATION
 
 =================================================
@@ -1602,7 +1603,6 @@ DYNAMIC PROGRAMMING: STEP-BY-STEP VISUALIZATION
 PROBLEM: Calculate Fibonacci(5) = F(5)
 Formula: F(n) = F(n-1) + F(n-2), where F(0)=0, F(1)=1
 
-═══════════════════════════════════════════════════════════════════════════════
 
 STEP 1: NAIVE RECURSIVE APPROACH (WITHOUT DP)
 
@@ -1629,7 +1629,6 @@ Issues:
 - F(0) calculated 3 times
 - Time Complexity: O(2^n) - EXPONENTIAL!
 
-═══════════════════════════════════════════════════════════════════════════════
 
 STEP 2: DYNAMIC PROGRAMMING APPROACH - TOP-DOWN (MEMOIZATION)
 ============================================================
@@ -1735,7 +1734,6 @@ Final Memory Table:
 Result: F(5) = 5
 Time Complexity: O(n) - LINEAR!
 
-═══════════════════════════════════════════════════════════════════════════════
 
 STEP 3: DYNAMIC PROGRAMMING APPROACH - BOTTOM-UP (TABULATION)
 
@@ -1809,7 +1807,6 @@ Final Table:
 Result: F(5) = 5
 Time Complexity: O(n), Space Complexity: O(n)
 
-═══════════════════════════════════════════════════════════════════════════════
 
 STEP 4: KEY DYNAMIC PROGRAMMING PRINCIPLES
 
@@ -1849,10 +1846,14 @@ STEP 4: KEY DYNAMIC PROGRAMMING PRINCIPLES
    │   memory        │   memory                │
    └─────────────────┴─────────────────────────┘
 
-═══════════════════════════════════════════════════════════════════════════════
+
+
+```
 
 PERFORMANCE COMPARISON
 =====================
+
+```
 
 Approach          | Time      | Space     | Calls to F(3)
 ─────────────────┼───────────┼───────────┼──────────────
@@ -1866,7 +1867,7 @@ For F(10):
 
 IMPROVEMENT: ~87x faster for F(10)!
 
-═══════════════════════════════════════════════════════════════════════════════
+```
 
 WHEN TO USE DYNAMIC PROGRAMMING
 ==============================
