@@ -2803,3 +2803,857 @@ If you can explain, without looking anything up:
 
 — then you have internalized the actual mental models this guide was built to teach, not just memorized the code.
 
+---
+
+## 7. SCC, bridges, articulation points
+
+### 7.1 Strongly connected components (SCC)
+
+**Definition:** in a directed graph, `u` and `v` are in the same SCC if `u` reaches `v` **and** `v` reaches `u`. SCCs partition the vertices. Collapse each SCC to one node and you get the **condensation**, which is always a **DAG**.
+
+```
+   Original graph (6 vertices)               Condensation (a DAG)
+
+        ┌────────┐                            
+        ▼        │                            
+       (0)──▶(1)─┘        (1→0 closes a cycle)     ┌───────────┐     ┌─────────┐     ┌─────┐
+        │     │                                    │ {0,1,2}   │────▶│ {3,4}   │────▶│ {5} │
+        ▼     │                                    └───────────┘     └─────────┘     └─────┘
+       (2)◀───┘  2→0 also returns                   
+        │                                          Each box = one SCC.
+        ▼                                          Edges between boxes never form a cycle.
+       (3)⇄(4)──▶(5)
+```
+
+**Why it matters:** dependency cycles (packages, modules), deadlock detection, 2-SAT (§12.3), web-graph structure, compilers (mutual recursion groups).
+
+**Tarjan's algorithm — one DFS, linear time**
+
+State per vertex: `idx[v]` (DFS discovery order), `low[v]` (smallest `idx` reachable from `v`'s DFS subtree using at most one back/cross edge to a vertex *still on the stack*), plus a stack of vertices "not yet assigned to an SCC".
+
+Invariant: when a vertex `u` finishes with `low[u] == idx[u]`, nothing in its subtree can reach above `u`, so `u` is the **root** of an SCC — pop the stack down to `u`; those popped vertices are the component.
+
+```
+   DFS tree with idx / low
+   
+   (0) idx0 low0  ← root of SCC? low==idx → yes, pop until 0
+    │
+   (1) idx1 low0  ← back edge to 0 lowered low
+    │
+   (2) idx2 low0  ← edge 2→0 (0 is on stack) low = idx[0] = 0
+   
+   stack: [0,1,2]  → at finish of 0: pop 2,1,0 → SCC {0,1,2}
+```
+
+Tarjan emits components in **reverse topological order** of the condensation (sinks first) — handy for DP over the condensation.
+
+**Kosaraju alternative:** (1) DFS on `G`, record finish order; (2) DFS on `Gᵀ` (transpose) in decreasing finish order — each tree is an SCC. Simpler to prove, two passes, needs the transpose.
+
+#### Go
+```go
+type tarjan struct {
+	g       *Graph
+	idx     []int
+	low     []int
+	onStack []bool
+	stack   []int
+	counter int
+	comp    []int
+	ncomp   int
+}
+
+func SCC(g *Graph) (comp []int, count int) {
+	t := &tarjan{
+		g: g, idx: make([]int, g.N), low: make([]int, g.N),
+		onStack: make([]bool, g.N), comp: make([]int, g.N),
+	}
+	for i := range t.idx {
+		t.idx[i] = -1
+	}
+	for v := 0; v < g.N; v++ {
+		if t.idx[v] == -1 {
+			t.visit(v)
+		}
+	}
+	return t.comp, t.ncomp
+}
+
+func (t *tarjan) visit(u int) {
+	t.idx[u], t.low[u] = t.counter, t.counter
+	t.counter++
+	t.stack = append(t.stack, u)
+	t.onStack[u] = true
+
+	for _, e := range t.g.Adj[u] {
+		v := e.To
+		if t.idx[v] == -1 { // tree edge
+			t.visit(v)
+			t.low[u] = min(t.low[u], t.low[v])
+		} else if t.onStack[v] { // edge into current SCC candidate
+			t.low[u] = min(t.low[u], t.idx[v])
+		}
+		// else: v already assigned to a finished SCC → ignore
+	}
+
+	if t.low[u] == t.idx[u] { // u is an SCC root
+		for {
+			w := t.stack[len(t.stack)-1]
+			t.stack = t.stack[:len(t.stack)-1]
+			t.onStack[w] = false
+			t.comp[w] = t.ncomp
+			if w == u {
+				break
+			}
+		}
+		t.ncomp++
+	}
+}
+```
+
+#### C
+```c
+typedef struct {
+    const Graph *g;
+    int *idx, *low, *comp, *stack;
+    char *on_stack;
+    int counter, sp, ncomp;
+} Tarjan;
+
+static void tarjan_visit(Tarjan *t, int u) {
+    t->idx[u] = t->low[u] = t->counter++;
+    t->stack[t->sp++] = u;
+    t->on_stack[u] = 1;
+
+    for (int e = t->g->head[u]; e != -1; e = t->g->nxt[e]) {
+        int v = t->g->to[e];
+        if (t->idx[v] == -1) {
+            tarjan_visit(t, v);
+            if (t->low[v] < t->low[u]) t->low[u] = t->low[v];
+        } else if (t->on_stack[v]) {
+            if (t->idx[v] < t->low[u]) t->low[u] = t->idx[v];
+        }
+    }
+    if (t->low[u] == t->idx[u]) {
+        int w;
+        do {
+            w = t->stack[--t->sp];
+            t->on_stack[w] = 0;
+            t->comp[w] = t->ncomp;
+        } while (w != u);
+        t->ncomp++;
+    }
+}
+
+/* comp[] receives component ids; returns number of components. */
+int scc(const Graph *g, int *comp) {
+    int n = g->n;
+    Tarjan t = { .g = g, .comp = comp, .counter = 0, .sp = 0, .ncomp = 0 };
+    t.idx      = malloc((size_t)n * sizeof(int));
+    t.low      = malloc((size_t)n * sizeof(int));
+    t.stack    = malloc((size_t)n * sizeof(int));
+    t.on_stack = calloc((size_t)n, 1);
+    for (int i = 0; i < n; i++) t.idx[i] = -1;
+    for (int v = 0; v < n; v++) if (t.idx[v] == -1) tarjan_visit(&t, v);
+    free(t.idx); free(t.low); free(t.stack); free(t.on_stack);
+    return t.ncomp;
+}
+```
+
+#### Rust
+```rust
+struct Tarjan<'a> {
+    g: &'a Graph,
+    idx: Vec<i32>,
+    low: Vec<i32>,
+    on_stack: Vec<bool>,
+    stack: Vec<usize>,
+    comp: Vec<usize>,
+    counter: i32,
+    ncomp: usize,
+}
+
+impl<'a> Tarjan<'a> {
+    fn visit(&mut self, u: usize) {
+        self.idx[u] = self.counter;
+        self.low[u] = self.counter;
+        self.counter += 1;
+        self.stack.push(u);
+        self.on_stack[u] = true;
+
+        let g = self.g; // copy the shared reference so iterating doesn't borrow `self`
+        for e in &g.adj[u] {
+            let v = e.to;
+            if self.idx[v] == -1 {
+                self.visit(v);
+                self.low[u] = self.low[u].min(self.low[v]);
+            } else if self.on_stack[v] {
+                self.low[u] = self.low[u].min(self.idx[v]);
+            }
+        }
+        if self.low[u] == self.idx[u] {
+            loop {
+                let w = self.stack.pop().unwrap();
+                self.on_stack[w] = false;
+                self.comp[w] = self.ncomp;
+                if w == u { break; }
+            }
+            self.ncomp += 1;
+        }
+    }
+}
+
+pub fn scc(g: &Graph) -> (Vec<usize>, usize) {
+    let n = g.n;
+    let mut t = Tarjan {
+        g, idx: vec![-1; n], low: vec![0; n], on_stack: vec![false; n],
+        stack: Vec::new(), comp: vec![0; n], counter: 0, ncomp: 0,
+    };
+    for v in 0..n {
+        if t.idx[v] == -1 { t.visit(v); }
+    }
+    (t.comp, t.ncomp)
+}
+```
+
+> Recursion depth = longest DFS path. For graphs with ≥10⁵–10⁶ vertices in a chain, run on a thread with a bigger stack (Rust: `std::thread::Builder::new().stack_size(...)`) or convert to iterative with an explicit `(u, edge_cursor)` stack as in §5.2.
+
+### 7.2 Bridges and articulation points (cut vertices)
+
+* **Bridge:** an undirected edge whose removal disconnects its component.
+* **Articulation point:** a vertex whose removal disconnects its component.
+* **Use:** network single-points-of-failure, road/graph robustness, biconnected components.
+
+```
+   (A)──(B)──(C)         Bridge: B–D          Articulation points: B and D
+          │    │                              (removing B isolates A; removing D isolates E)
+          │    │
+         (D)───┘ ← makes B,C,D a cycle → B–C, C–D, D–B are NOT bridges
+          │
+         (E)                
+```
+
+**Core idea (DFS low-link):** `tin[u]` = discovery time. `low[u]` = earliest `tin` reachable from `u`'s subtree using tree edges downward and **at most one back edge**.
+
+* Tree edge `u→v` is a **bridge** ⇔ `low[v] > tin[u]` (subtree of `v` cannot climb back to `u` or above).
+* `u` (non-root) is an **articulation point** ⇔ some child `v` has `low[v] >= tin[u]`.
+* Root is an articulation point ⇔ it has **≥ 2 DFS children**.
+
+Subtle: *parallel edges.* If two edges connect `u` and `v`, neither is a bridge. Skip the tree edge to the parent **once** (Go/Rust below) or by edge id (`e ^ 1` in C).
+
+#### Go
+```go
+func Bridges(g *Graph) (bridges [][2]int, cut []int) {
+	tin := make([]int, g.N)
+	low := make([]int, g.N)
+	for i := range tin {
+		tin[i] = -1
+	}
+	isCut := make([]bool, g.N)
+	timer := 0
+
+	var dfs func(u, p int)
+	dfs = func(u, p int) {
+		tin[u], low[u] = timer, timer
+		timer++
+		children, skipped := 0, false
+		for _, e := range g.Adj[u] {
+			v := e.To
+			if v == p && !skipped { // skip parent edge exactly once
+				skipped = true
+				continue
+			}
+			if tin[v] != -1 { // back edge
+				low[u] = min(low[u], tin[v])
+				continue
+			}
+			dfs(v, u)
+			children++
+			low[u] = min(low[u], low[v])
+			if low[v] > tin[u] {
+				bridges = append(bridges, [2]int{u, v})
+			}
+			if p != -1 && low[v] >= tin[u] {
+				isCut[u] = true
+			}
+		}
+		if p == -1 && children > 1 {
+			isCut[u] = true
+		}
+	}
+	for v := 0; v < g.N; v++ {
+		if tin[v] == -1 {
+			dfs(v, -1)
+		}
+	}
+	for v, c := range isCut {
+		if c {
+			cut = append(cut, v)
+		}
+	}
+	return
+}
+```
+
+#### C (uses the `e ^ 1` reverse-edge trick; build with `graph_add_undirected`)
+```c
+typedef struct {
+    const Graph *g;
+    int *tin, *low;
+    char *is_cut;
+    int (*bridges)[2];
+    int nb, timer;
+} BridgeCtx;
+
+static void bridge_dfs(BridgeCtx *c, int u, int parent_edge) {
+    const Graph *g = c->g;
+    c->tin[u] = c->low[u] = c->timer++;
+    int children = 0;
+    for (int e = g->head[u]; e != -1; e = g->nxt[e]) {
+        if ((e ^ 1) == parent_edge) continue;      /* don't walk back over the tree edge itself */
+        int v = g->to[e];
+        if (c->tin[v] != -1) {                     /* back edge */
+            if (c->tin[v] < c->low[u]) c->low[u] = c->tin[v];
+            continue;
+        }
+        bridge_dfs(c, v, e);
+        children++;
+        if (c->low[v] < c->low[u]) c->low[u] = c->low[v];
+        if (c->low[v] > c->tin[u]) {
+            c->bridges[c->nb][0] = u;
+            c->bridges[c->nb][1] = v;
+            c->nb++;
+        }
+        if (parent_edge != -1 && c->low[v] >= c->tin[u]) c->is_cut[u] = 1;
+    }
+    if (parent_edge == -1 && children > 1) c->is_cut[u] = 1;
+}
+
+/* out_bridges must hold up to n-1 pairs. Returns number of bridges. */
+int find_bridges(const Graph *g, int (*out_bridges)[2], char *is_cut) {
+    int n = g->n;
+    BridgeCtx c = { .g = g, .bridges = out_bridges, .is_cut = is_cut };
+    c.tin = malloc((size_t)n * sizeof(int));
+    c.low = malloc((size_t)n * sizeof(int));
+    for (int i = 0; i < n; i++) { c.tin[i] = -1; is_cut[i] = 0; }
+    for (int v = 0; v < n; v++) if (c.tin[v] == -1) bridge_dfs(&c, v, -1);
+    free(c.tin); free(c.low);
+    return c.nb;
+}
+```
+
+#### Rust
+```rust
+struct BridgeFinder<'a> {
+    g: &'a Graph,
+    tin: Vec<i32>,
+    low: Vec<i32>,
+    timer: i32,
+    is_cut: Vec<bool>,
+    bridges: Vec<(usize, usize)>,
+}
+
+impl<'a> BridgeFinder<'a> {
+    fn dfs(&mut self, u: usize, p: Option<usize>) {
+        self.tin[u] = self.timer;
+        self.low[u] = self.timer;
+        self.timer += 1;
+        let (mut children, mut skipped) = (0, false);
+        let g = self.g;
+        for e in &g.adj[u] {
+            let v = e.to;
+            if Some(v) == p && !skipped {
+                skipped = true;
+                continue;
+            }
+            if self.tin[v] != -1 {
+                self.low[u] = self.low[u].min(self.tin[v]);
+                continue;
+            }
+            self.dfs(v, Some(u));
+            children += 1;
+            self.low[u] = self.low[u].min(self.low[v]);
+            if self.low[v] > self.tin[u] {
+                self.bridges.push((u, v));
+            }
+            if p.is_some() && self.low[v] >= self.tin[u] {
+                self.is_cut[u] = true;
+            }
+        }
+        if p.is_none() && children > 1 {
+            self.is_cut[u] = true;
+        }
+    }
+}
+
+pub fn bridges_and_cuts(g: &Graph) -> (Vec<(usize, usize)>, Vec<usize>) {
+    let mut f = BridgeFinder {
+        g, tin: vec![-1; g.n], low: vec![0; g.n], timer: 0,
+        is_cut: vec![false; g.n], bridges: Vec::new(),
+    };
+    for v in 0..g.n {
+        if f.tin[v] == -1 { f.dfs(v, None); }
+    }
+    let cuts = (0..g.n).filter(|&v| f.is_cut[v]).collect();
+    (f.bridges, cuts)
+}
+```
+
+---
+
+## 8. Shortest paths
+
+### 8.0 Which algorithm? (memorize this table)
+
+| Situation | Algorithm | Time |
+|---|---|---|
+| Unweighted | BFS | `O(V+E)` |
+| Weights 0/1 | 0-1 BFS (deque) | `O(V+E)` |
+| Non-negative weights, single source | **Dijkstra** (binary heap) | `O((V+E) log V)` |
+| Negative weights allowed, single source | **Bellman-Ford** | `O(V·E)` |
+| DAG (any weights) | topological-order relaxation | `O(V+E)` |
+| All pairs, small/dense (`n` ≲ 500) | **Floyd-Warshall** | `O(V³)` |
+| All pairs, sparse with negative edges | **Johnson** | `O(V·E log V)` |
+| Single pair with good geometric guess | **A\*** | depends on heuristic |
+| Huge static road network | Contraction Hierarchies / landmarks (ALT) | preprocessing + microsecond queries |
+
+### 8.1 Dijkstra
+
+**Idea:** grow a set of vertices whose distance is *final*. Always finalize the unfinalized vertex with the smallest tentative distance, then relax its outgoing edges.
+
+**Why correct (the invariant):** when `u` has the smallest tentative distance among unfinalized vertices, any other route to `u` must pass through some unfinalized vertex with distance `≥ dist[u]`, and adding **non-negative** weights cannot make it shorter. **Negative edge ⇒ proof breaks ⇒ wrong answers.**
+
+**Lazy-deletion heap:** instead of a decrease-key operation, push a new `(dist,v)` on every improvement and skip stale entries when popped (`d > dist[v]`). Heap size ≤ E.
+
+```
+   Running example, source 0.  Heap holds (dist,vertex).
+
+   step   pop        relax                          dist[0..4]        heap after
+   ────   ────────   ────────────────────────────   ───────────────   ──────────────────────────
+   init                                             [0, ∞, ∞, ∞, ∞]   (0,0)
+   1      (0,0)      0→1: 4      0→2: 1             [0, 4, 1, ∞, ∞]   (1,2)(4,1)
+   2      (1,2)      2→1: 1+2=3<4 ✓   2→3: 6        [0, 3, 1, 6, ∞]   (3,1)(4,1)*(6,3)
+   3      (3,1)      1→3: 3+1=4<6 ✓                 [0, 3, 1, 4, ∞]   (4,3)(4,1)*(6,3)*
+   4      (4,3)      3→4: 4+3=7                     [0, 3, 1, 4, 7]   (4,1)*(6,3)*(7,4)
+   5..7   stale entries (*) skipped: 4>dist[1]=3, 6>dist[3]=4      
+   8      (7,4)      no out-edges                   done
+
+   parent: 1←2, 2←0, 3←1, 4←3     shortest 0→4 = 0→2→1→3→4, cost 7
+```
+
+**Cost:** `O((V+E) log V)`. With a Fibonacci heap `O(E + V log V)` (rarely faster in practice). On dense graphs `O(V²)` array-scan version is better.
+
+#### Go
+```go
+import "container/heap"
+
+type item struct {
+	node int
+	dist int64
+}
+type minHeap []item
+
+func (h minHeap) Len() int            { return len(h) }
+func (h minHeap) Less(i, j int) bool  { return h[i].dist < h[j].dist }
+func (h minHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *minHeap) Push(x any)         { *h = append(*h, x.(item)) }
+func (h *minHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+func Dijkstra(g *Graph, src int) (dist []int64, parent []int) {
+	dist = make([]int64, g.N)
+	parent = make([]int, g.N)
+	for i := range dist {
+		dist[i], parent[i] = Inf, -1
+	}
+	dist[src] = 0
+	h := &minHeap{{node: src, dist: 0}}
+	for h.Len() > 0 {
+		it := heap.Pop(h).(item)
+		if it.dist > dist[it.node] { // stale entry
+			continue
+		}
+		for _, e := range g.Adj[it.node] {
+			if nd := it.dist + e.W; nd < dist[e.To] {
+				dist[e.To] = nd
+				parent[e.To] = it.node
+				heap.Push(h, item{e.To, nd})
+			}
+		}
+	}
+	return
+}
+```
+
+#### C (hand-written binary heap)
+```c
+typedef struct { int64_t d; int v; } HeapItem;
+typedef struct { HeapItem *a; int size, cap; } MinHeap;
+
+static void heap_push(MinHeap *h, int64_t d, int v) {
+    if (h->size == h->cap) { h->cap *= 2; h->a = realloc(h->a, (size_t)h->cap * sizeof(HeapItem)); }
+    int i = h->size++;
+    h->a[i] = (HeapItem){ d, v };
+    while (i > 0) {                       /* sift up */
+        int p = (i - 1) / 2;
+        if (h->a[p].d <= h->a[i].d) break;
+        HeapItem t = h->a[p]; h->a[p] = h->a[i]; h->a[i] = t;
+        i = p;
+    }
+}
+
+static HeapItem heap_pop(MinHeap *h) {
+    HeapItem top = h->a[0];
+    h->a[0] = h->a[--h->size];
+    int i = 0;
+    for (;;) {                            /* sift down */
+        int l = 2 * i + 1, r = l + 1, s = i;
+        if (l < h->size && h->a[l].d < h->a[s].d) s = l;
+        if (r < h->size && h->a[r].d < h->a[s].d) s = r;
+        if (s == i) break;
+        HeapItem t = h->a[s]; h->a[s] = h->a[i]; h->a[i] = t;
+        i = s;
+    }
+    return top;
+}
+
+void dijkstra(const Graph *g, int src, int64_t *dist, int *parent) {
+    for (int i = 0; i < g->n; i++) { dist[i] = INF; parent[i] = -1; }
+    MinHeap h = { malloc(16 * sizeof(HeapItem)), 0, 16 };
+    dist[src] = 0;
+    heap_push(&h, 0, src);
+    while (h.size > 0) {
+        HeapItem it = heap_pop(&h);
+        if (it.d > dist[it.v]) continue;          /* stale */
+        for (int e = g->head[it.v]; e != -1; e = g->nxt[e]) {
+            int v = g->to[e];
+            int64_t nd = it.d + g->w[e];
+            if (nd < dist[v]) {
+                dist[v] = nd; parent[v] = it.v;
+                heap_push(&h, nd, v);
+            }
+        }
+    }
+    free(h.a);
+}
+```
+
+#### Rust
+```rust
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
+pub fn dijkstra(g: &Graph, src: usize) -> (Vec<i64>, Vec<Option<usize>>) {
+    let mut dist = vec![INF; g.n];
+    let mut parent = vec![None; g.n];
+    let mut heap = BinaryHeap::new();          // max-heap, so wrap in Reverse for min-heap
+    dist[src] = 0;
+    heap.push(Reverse((0i64, src)));
+    while let Some(Reverse((d, u))) = heap.pop() {
+        if d > dist[u] { continue; }           // stale
+        for e in &g.adj[u] {
+            let nd = d + e.w;
+            if nd < dist[e.to] {
+                dist[e.to] = nd;
+                parent[e.to] = Some(u);
+                heap.push(Reverse((nd, e.to)));
+            }
+        }
+    }
+    (dist, parent)
+}
+```
+
+### 8.2 Bellman-Ford (negative weights, negative-cycle detection)
+
+**Idea:** relax **every edge**, `n-1` times. After round `k`, every shortest path using ≤ `k` edges is correct. Any shortest simple path has ≤ `n-1` edges, so `n-1` rounds suffice. If round `n` still improves something, a **negative cycle** reachable from the source exists (distances could decrease forever).
+
+```
+   negative cycle:        2
+                 (A) ─────────▶ (B)
+                  ▲               │
+               -5 │               │ 1          A→B→C→A costs 2+1-5 = -2 < 0
+                  └───── (C) ◀────┘            every lap lowers the total → no shortest path
+```
+
+* Early exit: stop if a full round changes nothing.
+* Only vertices *reachable from a negative cycle* have undefined distance; propagate a `-∞` mark if you need per-vertex answers.
+* `SPFA` = queue-based Bellman-Ford; fast on average, still `O(VE)` worst case.
+
+#### Go
+```go
+func BellmanFord(n int, edges []WEdge, src int) (dist []int64, negCycle bool) {
+	dist = make([]int64, n)
+	for i := range dist {
+		dist[i] = Inf
+	}
+	dist[src] = 0
+	for round := 0; round < n-1; round++ {
+		changed := false
+		for _, e := range edges {
+			if dist[e.U] != Inf && dist[e.U]+e.W < dist[e.V] {
+				dist[e.V] = dist[e.U] + e.W
+				changed = true
+			}
+		}
+		if !changed {
+			return dist, false
+		}
+	}
+	for _, e := range edges { // n-th round: any improvement ⇒ negative cycle
+		if dist[e.U] != Inf && dist[e.U]+e.W < dist[e.V] {
+			return dist, true
+		}
+	}
+	return dist, false
+}
+```
+
+#### C
+```c
+typedef struct { int u, v; int64_t w; } WEdge;
+
+/* returns 1 if a negative cycle is reachable from src */
+int bellman_ford(int n, const WEdge *edges, int m, int src, int64_t *dist) {
+    for (int i = 0; i < n; i++) dist[i] = INF;
+    dist[src] = 0;
+    for (int round = 0; round < n - 1; round++) {
+        int changed = 0;
+        for (int i = 0; i < m; i++) {
+            const WEdge *e = &edges[i];
+            if (dist[e->u] != INF && dist[e->u] + e->w < dist[e->v]) {
+                dist[e->v] = dist[e->u] + e->w;
+                changed = 1;
+            }
+        }
+        if (!changed) return 0;
+    }
+    for (int i = 0; i < m; i++) {
+        const WEdge *e = &edges[i];
+        if (dist[e->u] != INF && dist[e->u] + e->w < dist[e->v]) return 1;
+    }
+    return 0;
+}
+```
+
+#### Rust
+```rust
+pub fn bellman_ford(n: usize, edges: &[WEdge], src: usize) -> (Vec<i64>, bool) {
+    let mut dist = vec![INF; n];
+    dist[src] = 0;
+    for _ in 0..n.saturating_sub(1) {
+        let mut changed = false;
+        for e in edges {
+            if dist[e.u] != INF && dist[e.u] + e.w < dist[e.v] {
+                dist[e.v] = dist[e.u] + e.w;
+                changed = true;
+            }
+        }
+        if !changed {
+            return (dist, false);
+        }
+    }
+    let neg = edges.iter().any(|e| dist[e.u] != INF && dist[e.u] + e.w < dist[e.v]);
+    (dist, neg)
+}
+```
+
+### 8.3 Floyd-Warshall (all pairs)
+
+**DP idea:** `d_k[i][j]` = shortest `i→j` using only vertices `{0..k-1}` as intermediates. Either `k` isn't used (`d_{k-1}[i][j]`) or it is (`d_{k-1}[i][k] + d_{k-1}[k][j]`). Update in place, **outer loop must be `k`**.
+
+```
+   for k in 0..n:              i ──────────────▶ j
+     for i in 0..n:             ╲              ▲
+       for j in 0..n:            ╲──▶ (k) ───╱      is going through k shorter?
+         d[i][j] = min(d[i][j], d[i][k] + d[k][j])
+```
+
+* Detect negative cycle: any `d[i][i] < 0` afterwards.
+* Path reconstruction: store `next[i][j]` (first hop) and update it together with `d`.
+* Also computes **transitive closure** with booleans (`reach[i][j] |= reach[i][k] && reach[k][j]`).
+
+#### Go
+```go
+// d[i][j] = weight of edge i→j, Inf if none; d[i][i] = 0. Modified in place.
+func FloydWarshall(d [][]int64) {
+	n := len(d)
+	for k := 0; k < n; k++ {
+		for i := 0; i < n; i++ {
+			if d[i][k] == Inf {
+				continue
+			}
+			for j := 0; j < n; j++ {
+				if d[k][j] == Inf {
+					continue
+				}
+				if s := d[i][k] + d[k][j]; s < d[i][j] {
+					d[i][j] = s
+				}
+			}
+		}
+	}
+}
+```
+
+#### C
+```c
+/* d is a flat n*n array: d[i*n + j] */
+void floyd_warshall(int n, int64_t *d) {
+    for (int k = 0; k < n; k++)
+        for (int i = 0; i < n; i++) {
+            int64_t dik = d[(size_t)i * n + k];
+            if (dik == INF) continue;
+            for (int j = 0; j < n; j++) {
+                int64_t dkj = d[(size_t)k * n + j];
+                if (dkj == INF) continue;
+                if (dik + dkj < d[(size_t)i * n + j]) d[(size_t)i * n + j] = dik + dkj;
+            }
+        }
+}
+```
+
+#### Rust
+```rust
+pub fn floyd_warshall(d: &mut Vec<Vec<i64>>) {
+    let n = d.len();
+    for k in 0..n {
+        for i in 0..n {
+            if d[i][k] == INF { continue; }
+            for j in 0..n {
+                if d[k][j] == INF { continue; }
+                let s = d[i][k] + d[k][j];
+                if s < d[i][j] { d[i][j] = s; }
+            }
+        }
+    }
+}
+```
+
+### 8.4 Shortest paths on a DAG
+
+Topologically sort, then relax outgoing edges of each vertex in that order. `O(V+E)`, negative weights allowed. Flip to `max` for **longest path / critical path** (project scheduling).
+
+```go
+func DagShortest(g *Graph, src int) []int64 {
+	order, ok := TopoSort(g)
+	if !ok {
+		panic("graph has a cycle")
+	}
+	dist := make([]int64, g.N)
+	for i := range dist {
+		dist[i] = Inf
+	}
+	dist[src] = 0
+	for _, u := range order {
+		if dist[u] == Inf {
+			continue
+		}
+		for _, e := range g.Adj[u] {
+			dist[e.To] = min(dist[e.To], dist[u]+e.W)
+		}
+	}
+	return dist
+}
+```
+
+### 8.5 A\* search
+
+Dijkstra + a **heuristic** `h(v)` estimating remaining cost to the goal. Pop the vertex with smallest `f(v) = g(v) + h(v)` where `g` = cost so far.
+
+* **Admissible** (`h` never overestimates) ⇒ optimal path. **Consistent** (`h(u) ≤ w(u,v) + h(v)`) ⇒ each vertex is expanded once.
+* Grid with 4-way moves: Manhattan distance. 8-way: Chebyshev/octile. Maps: straight-line distance / travel-speed.
+* `h ≡ 0` ⇒ Dijkstra. Better `h` ⇒ fewer expansions.
+
+```
+   Dijkstra explores a disc          A* explores a corridor toward the goal
+        . . . . . .                        . 
+      . . . . . . . .                       . . 
+     . . . S . . . . G                   S . . . . G
+      . . . . . . . .                       . .
+        . . . . . .                          .
+```
+
+```go
+func AStar(g *Graph, src, dst int, h func(v int) int64) (int64, []int) {
+	gcost := make([]int64, g.N)
+	parent := make([]int, g.N)
+	for i := range gcost {
+		gcost[i], parent[i] = Inf, -1
+	}
+	gcost[src] = 0
+	pq := &minHeap{{node: src, dist: h(src)}} // heap key is f = g + h
+	for pq.Len() > 0 {
+		it := heap.Pop(pq).(item)
+		u := it.node
+		if u == dst {
+			return gcost[u], PathTo(parent, dst)
+		}
+		if it.dist > gcost[u]+h(u) { // stale
+			continue
+		}
+		for _, e := range g.Adj[u] {
+			if ng := gcost[u] + e.W; ng < gcost[e.To] {
+				gcost[e.To] = ng
+				parent[e.To] = u
+				heap.Push(pq, item{e.To, ng + h(e.To)})
+			}
+		}
+	}
+	return Inf, nil
+}
+```
+
+### 8.6 0-1 BFS
+
+Weights are 0 or 1 ⇒ Dijkstra's heap is unnecessary. Use a deque: relax a 0-edge → **push front**, 1-edge → **push back**. `O(V+E)`.
+
+```go
+// Deque = "front stack" (push-front / pop-front at its end) + "back queue" (push-back / pop from head).
+func ZeroOneBFS(g *Graph, src int) []int64 {
+	dist := make([]int64, g.N)
+	for i := range dist {
+		dist[i] = Inf
+	}
+	dist[src] = 0
+	var front []int
+	back := []int{src}
+	bh := 0
+	for len(front) > 0 || bh < len(back) {
+		var u int
+		if len(front) > 0 {
+			u = front[len(front)-1]
+			front = front[:len(front)-1]
+		} else {
+			u = back[bh]
+			bh++
+		}
+		for _, e := range g.Adj[u] {
+			if nd := dist[u] + e.W; nd < dist[e.To] {
+				dist[e.To] = nd
+				if e.W == 0 {
+					front = append(front, e.To) // push FRONT
+				} else {
+					back = append(back, e.To) // push BACK
+				}
+			}
+		}
+	}
+	return dist
+}
+```
+> A vertex can be enqueued more than once (when its distance improves); stale copies are harmless because relaxation re-checks `nd < dist`. In Rust use `VecDeque` (`push_front` / `push_back`).
+
+### 8.7 Johnson's algorithm (all pairs, sparse, negative edges but no negative cycle)
+
+1. Add a fake vertex `s` with 0-weight edges to every vertex.
+2. Run Bellman-Ford from `s` → potentials `h[v]` (also detects negative cycles).
+3. **Reweight:** `w'(u,v) = w(u,v) + h[u] − h[v] ≥ 0`.
+4. Run Dijkstra from every vertex on `w'`.
+5. Un-reweight: `dist(u,v) = dist'(u,v) − h[u] + h[v]`.
+
+Why it works: any path `u ⇝ v` changes cost by the same constant `h[u] − h[v]`, so **the shortest path stays the same**, but all edges become non-negative. Total `O(V·E log V)`.
