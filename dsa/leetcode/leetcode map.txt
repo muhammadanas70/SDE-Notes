@@ -1,0 +1,93 @@
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟭: 𝗧𝘄𝗼 𝗣𝗼𝗶𝗻𝘁𝗲𝗿𝘀
+
+Use for sorted arrays, pairs and in-place operations.
+
+• LC 1 – Two Sum
+• LC 15 – 3Sum
+• LC 11 – Container With Most Water
+• LC 125 – Valid Palindrome
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟮: 𝗦𝗹𝗶𝗱𝗶𝗻𝗴 𝗪𝗶𝗻𝗱𝗼𝘄
+
+Use for contiguous subarrays/substrings.
+
+• LC 3 – Longest Substring Without Repeating Characters
+• LC 76 – Minimum Window Substring
+• LC 209 – Minimum Size Subarray Sum
+• LC 438 – Find All Anagrams in a String
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟯: 𝗙𝗮𝘀𝘁 & 𝗦𝗹𝗼𝘄 𝗣𝗼𝗶𝗻𝘁𝗲𝗿𝘀
+
+Use for cycles and linked-list movement.
+
+• LC 141 – Linked List Cycle
+• LC 142 – Linked List Cycle II
+• LC 876 – Middle of the Linked List
+• LC 202 – Happy Number
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟰: 𝗕𝗶𝗻𝗮𝗿𝘆 𝗦𝗲𝗮𝗿𝗰𝗵
+
+Use when you can eliminate half the search space.
+
+• LC 704 – Binary Search
+• LC 34 – First and Last Position
+• LC 33 – Search in Rotated Sorted Array
+• LC 875 – Koko Eating Bananas
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟱: 𝗣𝗿𝗲𝗳𝗶𝘅 𝗦𝘂𝗺 + 𝗛𝗮𝘀𝗵𝗶𝗻𝗴
+
+Use for range/subarray calculations and frequency tracking.
+
+• LC 1 – Two Sum
+• LC 560 – Subarray Sum Equals K
+• LC 525 – Contiguous Array
+• LC 974 – Subarray Sums Divisible by K
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟲: 𝗠𝗼𝗻𝗼𝘁𝗼𝗻𝗶𝗰 𝗦𝘁𝗮𝗰𝗸
+
+Use for next greater/smaller elements.
+
+• LC 739 – Daily Temperatures
+• LC 496 – Next Greater Element I
+• LC 503 – Next Greater Element II
+• LC 84 – Largest Rectangle in Histogram
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟳: 𝗥𝗲𝗰𝘂𝗿𝘀𝗶𝗼𝗻 & 𝗕𝗮𝗰𝗸𝘁𝗿𝗮𝗰𝗸𝗶𝗻𝗴
+
+Use for choices, combinations and arrangements.
+
+• LC 78 – Subsets
+• LC 46 – Permutations
+• LC 39 – Combination Sum
+• LC 22 – Generate Parentheses
+• LC 79 – Word Search
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟴: 𝗕𝗙𝗦 / 𝗗𝗙𝗦
+
+Use for trees, graphs, components and shortest paths.
+
+• LC 102 – Level Order Traversal
+• LC 200 – Number of Islands
+• LC 133 – Clone Graph
+• LC 207 – Course Schedule
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟵: 𝗚𝗿𝗲𝗲𝗱𝘆
+
+Use when local optimal choices lead to a global solution.
+
+• LC 55 – Jump Game
+• LC 45 – Jump Game II
+• LC 435 – Non-overlapping Intervals
+• LC 763 – Partition Labels
+
+𝗣𝗮𝘁𝘁𝗲𝗿𝗻 𝟭𝟬: 𝗗𝘆𝗻𝗮𝗺𝗶𝗰 𝗣𝗿𝗼𝗴𝗿𝗮𝗺𝗺𝗶𝗻𝗴
+
+Use for overlapping subproblems and reusable states.
+
+• LC 70 – Climbing Stairs
+• LC 198 – House Robber
+• LC 322 – Coin Change
+• LC 300 – Longest Increasing Subsequence
+• LC 1143 – Longest Common Subsequence
+
+𝗧𝗵𝗲 𝗴𝗼𝗮𝗹 𝗶𝘀𝗻'𝘁 𝘁𝗼 𝗺𝗲𝗺𝗼𝗿𝗶𝘇𝗲 𝗮𝗹𝗴𝗼𝗿𝗶𝘁𝗵𝗺𝘀.
