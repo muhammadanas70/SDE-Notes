@@ -2054,3 +2054,98 @@ If you can answer clearly, you understand the distinction. If not, re-read secti
 Your monk-like discipline will serve you here: **trust simple recursion first, add complexity only when proven necessary**. 🧘‍♂️
 
 Questions on this distinction?
+
+---
+
+Yes — an in-order traversal of a binary search tree (BST) always visits nodes in ascending sorted order.
+
+**Why this works:**
+
+In-order traversal follows this pattern for each node: **left subtree → node → right subtree**.
+
+The BST property guarantees:
+- Every node in the left subtree has a value **less than** the current node
+- Every node in the right subtree has a value **greater than** the current node
+
+So when you recursively apply "visit left, visit self, visit right" at every node, you always process smaller values before the current node, and larger values after it — which produces a fully sorted sequence.
+
+**Example:**
+
+```
+        8
+       / \
+      3   10
+     / \    \
+    1   6    14
+       / \   /
+      4   7 13
+```
+
+In-order traversal: `1, 3, 4, 6, 7, 8, 10, 13, 14` — sorted ascending.
+
+**Code (recursive, Go-style since that's likely your context):**
+
+```go
+func inorder(node *Node, result *[]int) {
+    if node == nil {
+        return
+    }
+    inorder(node.Left, result)
+    *result = append(*result, node.Val)
+    inorder(node.Right, result)
+}
+```
+
+One caveat: this only holds if the tree is a *valid* BST (every subtree actually satisfies the ordering property, not just the immediate children). A common interview trick — "validate a BST" — actually uses this exact fact: do an in-order traversal and check the output is strictly increasing.
+
+Good follow-up — pre-order and post-order don't give sorted output, but each has a specific structural property that makes it useful for different tasks.
+
+## Pre-order: Node → Left → Right
+
+**Characteristic:** The root is always visited *before* its subtrees, and this holds recursively — so the first element in the pre-order sequence is always the root of whatever (sub)tree you're looking at.
+
+**Use cases:**
+- **Serializing/cloning a tree** — since the root always comes first, you can reconstruct the exact tree structure from a pre-order sequence (plus knowing which nodes are null, or having a BST where order is inferable).
+- **Copying a tree** — create the root first, then recursively build left and right.
+- **Prefix expression evaluation** — pre-order on an expression tree gives prefix (Polish) notation: `+ * 2 3 4` for `(2*3)+4`.
+
+```go
+func preorder(node *Node, result *[]int) {
+    if node == nil {
+        return
+    }
+    *result = append(*result, node.Val)
+    preorder(node.Left, result)
+    preorder(node.Right, result)
+}
+```
+
+## Post-order: Left → Right → Node
+
+**Characteristic:** The root is always visited *last* — children are always fully processed before their parent. This means when you're at a node, you can trust that any computation on its children is already done.
+
+**Use cases:**
+- **Deleting/freeing a tree** — you must delete children before the parent, or you lose the reference to them. Post-order is the only traversal order that's safe for this.
+- **Computing properties bottom-up** — height of a tree, size of subtrees, checking if a tree is balanced — anything where a node's answer depends on its children's answers first.
+- **Postfix expression evaluation** — `2 3 * 4 +` for `(2*3)+4`, directly evaluable with a stack.
+
+```go
+func postorder(node *Node, result *[]int) {
+    if node == nil {
+        return
+    }
+    postorder(node.Left, result)
+    postorder(node.Right, result)
+    *result = append(*result, node.Val)
+}
+```
+
+## Quick summary table
+
+| Traversal | Order | Root position | Key property |
+|---|---|---|---|
+| In-order | L, N, R | Middle | Sorted output (BST only) |
+| Pre-order | N, L, R | First | First element = root; good for reconstruction |
+| Post-order | L, R, N | Last | Children processed before parent; good for cleanup/bottom-up computation |
+
+One thing worth internalizing for interviews: if you're given **both pre-order and in-order** (or **post-order and in-order**) traversals of a tree, you can uniquely reconstruct the original tree — that's a classic problem. Pre-order + post-order alone is *not* enough unless the tree is guaranteed to be full (every node has 0 or 2 children).

@@ -1,1 +1,28 @@
-freeProgrammingPDF/
+# Cargo build output
+target/
+
+# Rust backup files
+**/*.rs.bk
+
+# Cargo lock (ignore only for libraries)
+# Keep Cargo.lock for applications
+# Cargo.lock
+
+# VS Code
+.vscode/
+
+# JetBrains IDEs
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
